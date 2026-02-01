@@ -692,7 +692,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "initial_accumulator": 1e-6,
         "eps": 1e-3,
     },
-    Optimizer.AUTOMAGIC: {
+    Optimizer.AUTOMAGIC_SINKGD: {
         "allora": True,
         "eta": 2.0,
         "orthograd": False,

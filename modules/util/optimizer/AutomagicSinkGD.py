@@ -1,8 +1,11 @@
 
 import torch
-from typing import Optional, Callable, List
+from typing import Optional, Callable
+import logging
 
-class Automagic(torch.optim.Optimizer):
+logger = logging.getLogger(__name__)
+
+class AutomagicSinkGD(torch.optim.Optimizer):
     def __init__(
         self,
         params,
@@ -17,13 +20,13 @@ class Automagic(torch.optim.Optimizer):
         max_lr: int = 300,
         min_lr: int = 10,
         lr_bump: int = 0,
-        use_kahan: bool = True, # [New] Kahan switch
+        use_kahan: bool = True,
     ):
         self.sinkgd_iters = int(sinkgd_iters)
         self.weight_decay = float(weight_decay)
         self.warmup_steps = int(warmup_steps)
         self._step = 1
-
+        
         defaults = dict(
             lr=float(lr),
             allora=bool(allora),
@@ -34,7 +37,7 @@ class Automagic(torch.optim.Optimizer):
             lr_bump=int(lr_bump),
             min_lr=int(min_lr),
             max_lr=int(max_lr),
-            use_kahan=bool(use_kahan), # [New] Added to defaults
+            use_kahan=bool(use_kahan),
         )
         super().__init__(params, defaults)
 
@@ -59,8 +62,6 @@ class Automagic(torch.optim.Optimizer):
         if group["beta1"] > 0:
             state.setdefault("exp_avg", torch.zeros_like(p.data))
         
-        # [New] Initialize Kahan compensation buffer
-        # Only create if enabled and not already present. Same dtype as params (e.g., BF16)
         if group.get("use_kahan", False) and "kahan_comp" not in state:
             state["kahan_comp"] = torch.zeros_like(p.data)
 
@@ -104,13 +105,23 @@ class Automagic(torch.optim.Optimizer):
 
     @torch.no_grad()
     def step(self, closure: Optional[Callable[[], float]] = None) -> Optional[float]:
+        # Sync self._step with optimizer state on first run
+        if self._step == 1:
+            max_step = 0
+            for group in self.param_groups:
+                for p in group["params"]:
+                    if p in self.state and "step" in self.state[p]:
+                        max_step = max(max_step, self.state[p]["step"])
+            if max_step > 0:
+                self._step = max_step + 1
+
         loss = None
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
 
         in_warmup = (self._step <= self.warmup_steps)
-
+        
         for group in self.param_groups:
             use_weight_decay = False
             mean_norm, std_norm = 0.0, 1.0
@@ -128,28 +139,29 @@ class Automagic(torch.optim.Optimizer):
                 state = self.state[p]
                 if not state: self._init_state(p, group)
 
-                # Ensure Kahan buffer is initialized if needed (in case of loaded state dicts)
                 if group.get("use_kahan", False) and "kahan_comp" not in state:
                     state["kahan_comp"] = torch.zeros_like(p.data)
 
                 grad = p.grad.data
                 state["step"] += 1
 
-                # Update Logic
+                # SinkGD
                 if grad.ndim == 2:
                     update = self.SinkGD(grad, self.sinkgd_iters)
                 else:
                     update = grad
                 
-                # Apply Orthograd if enabled
+                # Orthograd
                 if group["orthograd"]:
                      update = self.Orthograd(p.data, update)
 
+                # Momentum
                 beta1 = group["beta1"]
                 if beta1 > 0:
                     state["exp_avg"].mul_(beta1).add_(update, alpha=1 - beta1)
                     update = update.abs().mul_(state["exp_avg"].sign())
 
+                # LR Masking
                 base_lr = float(group["lr"])
                 allora_scaling = float(state.get("row_scaling", 1.0))
 
@@ -161,7 +173,6 @@ class Automagic(torch.optim.Optimizer):
                     same = (last_polarity == current_polarity)
                     state["last_polarity"] = current_polarity
 
-                    # Update mask
                     lr_adjust = torch.where(same, int(group["lr_bump"]), -int(group["lr_bump"]))
                     lr_mask_i.add_(lr_adjust.to(torch.int16)).clamp_(
                         min=int(group["min_lr"]),
@@ -173,11 +184,8 @@ class Automagic(torch.optim.Optimizer):
                         state["lr_max_val"] = base_lr
                     state["lr_max_val"] = max(base_lr, state["lr_max_val"])
                     
-                    # For display (no allora)
                     lr_no_allora = (base_lr * mask_f).clamp(min=state["lr_max_val"] * 0.1)
                     state["avg_lr_no_allora"] = float(lr_no_allora.mean().item())
-
-                    # For actual update (with allora)
                     lr_to_use = lr_no_allora * allora_scaling
                 else:
                     state["avg_lr_no_allora"] = base_lr
@@ -190,39 +198,19 @@ class Automagic(torch.optim.Optimizer):
                     norm_grad = (param_abs_grad - mean_norm) / std_norm
                     ada_alpha = 4.0
                     theta = 2.0 / (1.0 + torch.exp(-ada_alpha * norm_grad))
-                    # lr_to_use can be a Tensor, mul_ supports broadcasting
                     p.data.mul_(1 - (lr_to_use * group["weight_decay"] * theta))
-
-                # Parameter Update with Kahan Summation Support
                 
-                # Calculate the exact update value (supports both float and tensor LR)
-                if isinstance(lr_to_use, torch.Tensor):
-                    update_val = update * lr_to_use
-                else:
-                    update_val = update * lr_to_use
-
+                # Update
+                update_val = update * lr_to_use
                 if group.get("use_kahan", False):
                     kahan_comp = state["kahan_comp"]
-
-                    # 1. Compensate: Subtract the previous error from the update
-                    # We want to perform: p = p - update_val
-                    # Let y = -update_val - comp
                     vals_to_add = -update_val
                     compensated_update = vals_to_add - kahan_comp
-
-                    # 2. Accumulate: Add to weights (precision loss happens here)
-                    # t = p + y
                     new_param = p.data + compensated_update
-
-                    # 3. Measure Error: Calculate what was lost
-                    # new_comp = (t - p) - y
                     new_comp = (new_param - p.data) - compensated_update
                     kahan_comp.copy_(new_comp)
-
-                    # 4. Update Weight
                     p.data.copy_(new_param)
                 else:
-                    # Standard Update
                     p.data.add_(-update_val)
 
         self._step += 1

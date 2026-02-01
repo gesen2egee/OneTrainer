@@ -80,7 +80,7 @@ class Optimizer(Enum):
     YOGI = 'YOGI'
 
     # Automagic
-    AUTOMAGIC = 'AUTOMAGIC'
+    AUTOMAGIC_SINKGD = 'AUTOMAGIC_SINKGD'
 
     @property
     def is_adaptive(self):

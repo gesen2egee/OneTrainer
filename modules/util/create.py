@@ -1474,9 +1474,10 @@ def create_optimizer(
             )
 
         # Automagic Optimizer
-        case Optimizer.AUTOMAGIC:
-            from modules.util.optimizer.Automagic import Automagic
-            optimizer = Automagic(
+        # Automagic Optimizer
+        case Optimizer.AUTOMAGIC_SINKGD:
+            from modules.util.optimizer.AutomagicSinkGD import AutomagicSinkGD
+            optimizer = AutomagicSinkGD(
                 params=parameters,
                 lr=config.learning_rate,
                 allora=optimizer_config.allora if optimizer_config.allora is not None else True,

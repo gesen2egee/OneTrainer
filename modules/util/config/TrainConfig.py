@@ -545,6 +545,9 @@ class TrainConfig(BaseConfig):
     lora_weight_dtype: DataType
     bundle_additional_embeddings: bool
 
+    # lokr
+    lokr_factor: int
+
     # oft
     oft_block_size: int
     oft_coft: bool
@@ -1172,6 +1175,9 @@ class TrainConfig(BaseConfig):
         data.append(("lora_decompose_output_axis", False, bool, False))
         data.append(("lora_weight_dtype", DataType.FLOAT_32, DataType, False))
         data.append(("bundle_additional_embeddings", True, bool, False))
+        
+        # lokr
+        data.append(("lokr_factor", -1, int, False))
 
         # oft
         data.append(("oft_block_size", 32, int, False))

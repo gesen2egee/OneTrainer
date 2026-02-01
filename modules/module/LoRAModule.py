@@ -573,6 +573,166 @@ DummyLoHaModule = LoHaModule.make_dummy()
 DummyOFTModule = OFTModule.make_dummy()
 
 
+def factorization(dimension: int, factor: int = -1) -> tuple[int, int]:
+    find_factor = int(factor)
+    qn = int(math.sqrt(dimension))
+    for i in range(qn, 0, -1):
+        if dimension % i == 0:
+            if find_factor == -1 or i == find_factor or dimension // i == find_factor:
+                m, n = i, dimension // i
+                return m, n # m is smaller or equal to sqrt, n is larger or equal
+    return -1, -1
+
+
+class LokrModule(PeftBase):
+    """Implementation of LoKr from Lycoris."""
+    rank: int
+    factor: int
+    alpha: Tensor
+    dropout: Dropout
+    
+    lokr_w1: Parameter | None
+    lokr_w1_a: Parameter | None
+    lokr_w1_b: Parameter | None
+    lokr_w2: Parameter | None
+    lokr_w2_a: Parameter | None
+    lokr_w2_b: Parameter | None
+
+    def __init__(self, prefix: str, orig_module: nn.Module | None, rank: int, alpha: float, factor: int = -1):
+        super().__init__(prefix, orig_module)
+        self.rank = rank
+        self.factor = int(factor)
+        self.dropout = Dropout(0)
+        self.register_buffer("alpha", torch.tensor(alpha))
+
+        self.lokr_w1 = None
+        self.lokr_w1_a = None
+        self.lokr_w1_b = None
+        self.lokr_w2 = None
+        self.lokr_w2_a = None
+        self.lokr_w2_b = None
+
+        if orig_module is not None:
+            self.initialize_weights()
+            self.alpha = self.alpha.to(orig_module.weight.device)
+        self.alpha.requires_grad_(False)
+    
+    def initialize_weights(self):
+        self._initialized = True
+        device = self.orig_module.weight.device
+        
+        if isinstance(self.orig_module, nn.Conv2d):
+            in_dim = self.orig_module.in_channels
+            out_dim = self.orig_module.out_channels
+            k_size = self.orig_module.kernel_size
+            self.shape = (out_dim, in_dim, *k_size)
+        elif isinstance(self.orig_module, nn.Linear):
+            in_dim = self.orig_module.in_features
+            out_dim = self.orig_module.out_features
+            self.shape = (out_dim, in_dim)
+            k_size = None
+        else:
+             raise NotImplementedError("Only Linear and Conv2d are supported.")
+
+        in_m, in_n = factorization(in_dim, self.factor)
+        out_l, out_k = factorization(out_dim, self.factor)
+        
+        # Consistent with Lycoris: w1 (l, m), w2 (k, n)
+        # shape: ((out_l, out_k), (in_m, in_n))
+        # w1: (out_l, in_m)
+        # w2: (out_k, in_n)
+        
+        shape_w1 = (out_l, in_m)
+        shape_w2 = (out_k, in_n)
+        
+        # Decide decomposition
+        # Logic: if rank < max(shape)/2 -> decompose. Else full.
+        
+        # W1
+        if self.rank < max(shape_w1) / 2:
+            self.lokr_w1_a = Parameter(torch.empty(shape_w1[0], self.rank, device=device)) # Up
+            self.lokr_w1_b = Parameter(torch.empty(self.rank, shape_w1[1], device=device)) # Down
+            nn.init.kaiming_uniform_(self.lokr_w1_a, a=math.sqrt(5))
+            nn.init.kaiming_uniform_(self.lokr_w1_b, a=math.sqrt(5))
+        else:
+            self.lokr_w1 = Parameter(torch.empty(shape_w1[0], shape_w1[1], device=device))
+            nn.init.kaiming_uniform_(self.lokr_w1, a=math.sqrt(5))
+            
+        # W2
+        if isinstance(self.orig_module, nn.Conv2d):
+             # w2 has kernel size
+             shape_w2 = (shape_w2[0], shape_w2[1], *k_size)
+        
+        # Simpler logic for W2 decomposition check on first 2 dims
+        if self.rank < max(shape_w2[:2]) / 2:
+             # Decomposed
+             # w2_a (out_k, rank)
+             # w2_b (rank, in_n * k1 * k2)
+             self.lokr_w2_a = Parameter(torch.empty(shape_w2[0], self.rank, device=device))
+             flat_in = shape_w2[1]
+             if len(shape_w2) > 2:
+                 flat_in *= (shape_w2[2] * shape_w2[3])
+             
+             self.lokr_w2_b = Parameter(torch.empty(self.rank, flat_in, device=device))
+             
+             nn.init.kaiming_uniform_(self.lokr_w2_a, a=math.sqrt(5))
+             nn.init.constant_(self.lokr_w2_b, 0)
+        else:
+             self.lokr_w2 = Parameter(torch.empty(*shape_w2, device=device))
+             nn.init.constant_(self.lokr_w2, 0)
+
+    def check_initialized(self):
+        super().check_initialized()
+        # Basic check
+        assert (self.lokr_w1 is not None) or (self.lokr_w1_a is not None and self.lokr_w1_b is not None)
+        assert (self.lokr_w2 is not None) or (self.lokr_w2_a is not None and self.lokr_w2_b is not None)
+
+    def get_w1(self):
+        if self.lokr_w1 is not None:
+            return self.lokr_w1
+        return self.make_weight(self.dropout(self.lokr_w1_b), self.dropout(self.lokr_w1_a))
+
+    def get_w2(self):
+        if self.lokr_w2 is not None:
+            return self.lokr_w2
+        
+        mat = self.make_weight(self.dropout(self.lokr_w2_b), self.dropout(self.lokr_w2_a))
+        
+        if isinstance(self.orig_module, nn.Conv2d):
+             w1_shape = self.get_w1().shape
+             out_l, in_m = w1_shape[0], w1_shape[1]
+             
+             out_k = self.shape[0] // out_l
+             in_n = self.shape[1] // in_m
+             k1, k2 = self.shape[2], self.shape[3]
+             
+             return mat.view(out_k, in_n, k1, k2)
+        else:
+             return mat
+
+    def forward(self, x, *args, **kwargs):
+        self.check_initialized()
+        
+        w1 = self.get_w1()
+        w2 = self.get_w2()
+        
+        if w2.ndim == 4:
+            w1 = w1.unsqueeze(2).unsqueeze(2)
+        
+        W = torch.kron(w1, w2)
+        W = W * (self.alpha / self.rank)
+        
+        return self.orig_forward(x) + self.op(x, W, bias=None, **self.layer_kwargs)
+
+    def apply_to_module(self):
+        pass
+
+    def extract_from_module(self, base_module: nn.Module):
+        pass
+
+DummyLokrModule = LokrModule.make_dummy()
+
+
 class LoRAModuleWrapper:
     orig_module: nn.Module
     rank: int
@@ -620,6 +780,13 @@ class LoRAModuleWrapper:
             self.dummy_klass = DummyLoHaModule
             self.additional_args = [self.rank, self.alpha]
             self.additional_kwargs = {}
+        elif self.peft_type == PeftType.LOKR:
+            self.klass = LokrModule
+            self.dummy_klass = DummyLokrModule
+            self.additional_args = [self.rank, self.alpha]
+            self.additional_kwargs = {
+                'factor': config.lokr_factor
+            }
         elif self.peft_type == PeftType.OFT_2:
             self.klass = OFTModule
             self.dummy_klass = DummyOFTModule
@@ -711,7 +878,7 @@ class LoRAModuleWrapper:
             return
 
         # For OFT, the comparison is not straightforward, so we skip it.
-        if self.peft_type == PeftType.OFT_2:
+        if self.peft_type == PeftType.OFT_2 or self.peft_type == PeftType.LOKR:
             return
 
         if rank_key := next((k for k in state_dict if k.endswith((".lora_down.weight", ".hada_w1_a"))), None):

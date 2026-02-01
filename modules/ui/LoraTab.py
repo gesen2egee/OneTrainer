@@ -38,12 +38,15 @@ class LoraTab:
         components.options_kv(self.scroll_frame, 0, 1, [
             ("LoRA", PeftType.LORA),
             ("LoHa", PeftType.LOHA),
+            ("LoKr", PeftType.LOKR),
             ("OFT v2", PeftType.OFT_2),
         ], self.ui_state, "peft_type", command=self.setup_lora)
 
     def setup_lora(self, peft_type: PeftType):
         if peft_type == PeftType.LOHA:
             name = "LoHa"
+        elif peft_type == PeftType.LOKR:
+            name = "LoKr"
         elif peft_type == PeftType.OFT_2:
             name = "OFT v2"
         else:
@@ -84,8 +87,8 @@ class LoraTab:
                              tooltip="Apply the weight decomposition on the output axis instead of the input axis.")
             components.switch(master, 3, 4, self.ui_state, "lora_decompose_output_axis")
 
-        # LoRA and LoHA shared settings
-        if peft_type == PeftType.LORA or peft_type == PeftType.LOHA:
+        # LoRA, LoHA, LoKr shared settings
+        if peft_type in [PeftType.LORA, PeftType.LOHA, PeftType.LOKR]:
             # rank
             components.label(master, 1, 0, f"{name} rank",
                             tooltip=f"The rank parameter used when creating a new {name}")
@@ -113,6 +116,12 @@ class LoraTab:
             components.label(master, 5, 0, "Bundle Embeddings",
                             tooltip=f"Bundles any additional embeddings into the {name} output file, rather than as separate files")
             components.switch(master, 5, 1, self.ui_state, "bundle_additional_embeddings")
+            
+            # LoKr specific
+            if peft_type == PeftType.LOKR:
+                 components.label(master, 1, 3, "Factor",
+                                 tooltip="LoKr Factor. -1 for automatic.")
+                 components.entry(master, 1, 4, self.ui_state, "lokr_factor")
 
         # OFTv2
         elif peft_type == PeftType.OFT_2:
@@ -120,7 +129,7 @@ class LoraTab:
             components.label(master, 1, 0, f"{name} Block Size",
                             tooltip=f"The block size parameter used when creating a new {name}")
             components.entry(master, 1, 1, self.ui_state, "oft_block_size")
-
+            
             # COFT
             components.label(master, 1, 3, "Constrained OFT (COFT)",
                              tooltip="Use the constrained variant of OFT. This constrains the learned rotation to stay very close to the identity matrix, limiting adaptation to only small changes. This improves training stability, helps prevent overfitting on small datasets, and better preserves the base models original knowledge but it may lack expressiveness for tasks requiring substantial adaptation and introduces an additional hyperparameter (COFT Epsilon) that needs tuning.")

@@ -108,6 +108,7 @@ class ZImageSampler(BaseModelSampler):
                     transformer=transformer,
                     preset=meancache_preset,
                     enabled=True,
+                    total_steps=diffusion_steps,  # Pass total steps for PSSP schedule
                 )
                 active_transformer = meancache
                 logger.info(f"[MeanCache] Enabled with preset: {meancache_preset}")

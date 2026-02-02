@@ -12,18 +12,156 @@ Key formulas:
 """
 
 import torch
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
 
-# Preset configurations
+# Preset configurations matching original repo
 MEANCACHE_PRESETS = {
-    "quality": {"rel_l1_thresh": 0.20, "skip_budget": 0.25, "start_step": 3},   # ~1.3x
-    "balanced": {"rel_l1_thresh": 0.15, "skip_budget": 0.35, "start_step": 2},  # ~1.5x  
-    "speed": {"rel_l1_thresh": 0.12, "skip_budget": 0.42, "start_step": 2},     # ~1.7x
-    "turbo": {"rel_l1_thresh": 0.10, "skip_budget": 0.50, "start_step": 1},     # ~2.0x
+    "quality": {
+        "rel_l1_thresh": 0.15,
+        "skip_budget": 0.25,
+        "start_step": 3,
+        "gamma": 2.0,
+        "peak_threshold": 0.20,
+    },
+    "balanced": {
+        "rel_l1_thresh": 0.12,
+        "skip_budget": 0.35,
+        "start_step": 2,
+        "gamma": 2.0,
+        "peak_threshold": 0.15,
+    },
+    "speed": {
+        "rel_l1_thresh": 0.10,
+        "skip_budget": 0.42,
+        "start_step": 2,
+        "gamma": 2.0,
+        "peak_threshold": 0.12,
+    },
+    "turbo": {
+        "rel_l1_thresh": 0.08,
+        "skip_budget": 0.50,
+        "start_step": 1,
+        "gamma": 2.0,
+        "peak_threshold": 0.10,
+    },
 }
+
+
+class TrajectoryScheduler:
+    """
+    Implements Peak-Suppressed Shortest Path (PSSP) algorithm.
+    Pre-computes a fixed skip schedule before sampling begins.
+    """
+    
+    def __init__(
+        self,
+        total_steps: int,
+        skip_budget: float = 0.3,
+        gamma: float = 2.0,
+        peak_threshold: float = 0.15,
+        min_compute_steps: int = 4,
+        critical_start_ratio: float = 0.20,
+        critical_end_ratio: float = 0.85
+    ):
+        self.total_steps = max(1, total_steps)
+        self.skip_budget = max(0.0, min(0.5, skip_budget))
+        self.gamma = gamma
+        self.peak_threshold = peak_threshold
+        self.min_compute_steps = min_compute_steps
+        self.critical_start_ratio = critical_start_ratio
+        self.critical_end_ratio = critical_end_ratio
+        
+        # Pre-computed skip mask (True = skip this step)
+        self.skip_mask: List[bool] = [False] * total_steps
+        
+        # Compute heuristic schedule at initialization
+        self._compute_heuristic_schedule()
+    
+    def _compute_heuristic_schedule(self) -> None:
+        """
+        Compute initial heuristic schedule.
+        Protects critical early/late steps and distributes skips evenly
+        in the middle zone with minimum spacing.
+        """
+        n = self.total_steps
+        max_skips = max(0, int(n * self.skip_budget))
+        
+        # Compute critical zone boundaries
+        critical_start = max(1, int(n * self.critical_start_ratio))
+        critical_end = min(n - 1, int(n * self.critical_end_ratio))
+        
+        # Initialize all as compute (False = don't skip)
+        self.skip_mask = [False] * n
+        
+        # No skips if budget is 0 or too few steps
+        if max_skips == 0 or n <= self.min_compute_steps:
+            return
+        
+        # Identify skip candidates in middle zone
+        skip_candidates = list(range(critical_start, critical_end))
+        
+        if len(skip_candidates) == 0:
+            return
+        
+        # Calculate minimum spacing between skips
+        min_spacing = max(2, len(skip_candidates) // (max_skips + 1))
+        
+        # Assign skips with even spacing
+        skips_assigned = 0
+        for i in range(0, len(skip_candidates), min_spacing):
+            if skips_assigned >= max_skips:
+                break
+            idx = skip_candidates[i]
+            self.skip_mask[idx] = True
+            skips_assigned += 1
+    
+    def get_skip_decision(
+        self,
+        step_index: int,
+        velocity_similarity: float,
+        accumulated_error: float
+    ) -> Tuple[bool, float]:
+        """
+        Get skip decision for current step using PSSP schedule.
+        
+        Uses pre-computed schedule with runtime velocity checks for safety.
+        """
+        max_accumulated = 0.5
+        
+        # Out of bounds check
+        if step_index < 0 or step_index >= len(self.skip_mask):
+            return False, 0.0
+        
+        scheduled_skip = self.skip_mask[step_index]
+        
+        # Override: don't skip if velocity changed too much (peak suppression)
+        if scheduled_skip and velocity_similarity > self.peak_threshold:
+            return False, 0.0
+        
+        # Override: don't skip if too much error accumulated
+        if scheduled_skip and accumulated_error > max_accumulated * 0.8:
+            return False, 0.0
+        
+        # Follow schedule
+        if scheduled_skip:
+            new_error = accumulated_error + velocity_similarity
+            return True, new_error
+        
+        # Compute step - reset accumulated error
+        return False, 0.0
+    
+    def get_schedule_summary(self) -> dict:
+        """Get summary of the skip schedule."""
+        skip_indices = [i for i, skip in enumerate(self.skip_mask) if skip]
+        return {
+            'total_steps': self.total_steps,
+            'scheduled_skips': len(skip_indices),
+            'skip_ratio': len(skip_indices) / max(1, self.total_steps),
+            'skip_indices': skip_indices,
+        }
 
 
 class MeanCacheState:
@@ -77,7 +215,8 @@ class MeanCacheState:
         t_now = t_history[-1]
         t_k_ago = t_history[-(k + 1)]
         
-        dt = t_k_ago - t_now  # sigma decreases, so t_k_ago > t_now
+        # Z-Image: normalized_timestep INCREASES (0→1), so t_now > t_k_ago
+        dt = t_now - t_k_ago
         if abs(dt) < eps:
             return None
         
@@ -92,12 +231,15 @@ class MeanCacheState:
 
 
 def get_optimal_k(sigma: float, max_k: int = 3) -> int:
-    """Select optimal JVP lookback K based on sigma (noise level)."""
-    if sigma > 0.5:
+    """
+    Select optimal JVP lookback K based on sigma (normalized timestep).
+    For Z-Image: sigma goes from ~0 (start) to ~1 (end).
+    """
+    if sigma < 0.3:
         return 1  # Early: fast changes, short lookback
-    elif sigma > 0.2:
+    elif sigma < 0.6:
         return min(max_k, 2)
-    elif sigma > 0.1:
+    elif sigma < 0.8:
         return min(max_k, 3)
     else:
         return max_k  # Late: stable, max smoothing
@@ -112,10 +254,6 @@ def compute_online_L_K(
 ) -> float:
     """
     Compute online approximation of paper's L_K stability deviation.
-    
-    Measures retrospective JVP accuracy: how accurate was the cached
-    JVP extrapolation at predicting the new velocity?
-    
     L_K ≈ ||v_new - (v_cached + dt * JVP_cached)|| / ||v_new||
     """
     predicted_v = v_cached.to(v_new.device) + dt_elapsed * jvp_cached.to(v_new.device)
@@ -132,33 +270,12 @@ def compute_velocity_similarity(v_current: torch.Tensor, v_cache: torch.Tensor) 
     return (l1_distance / norm).item()
 
 
-def should_skip_step(
-    stability_deviation: float,
-    threshold: float,
-    accumulated_error: float,
-    max_accumulated: float = 0.5
-) -> tuple[bool, float]:
-    """Decide whether to skip current step based on stability deviation."""
-    # Adaptive threshold with peak suppression
-    accumulation_factor = 1.0 - (accumulated_error / max_accumulated)
-    effective_threshold = threshold * max(0.1, accumulation_factor)
-    
-    if stability_deviation < effective_threshold:
-        new_accumulated = accumulated_error + stability_deviation
-        if new_accumulated < max_accumulated:
-            return True, new_accumulated
-    
-    # Reset accumulated error on compute
-    return False, 0.0
-
-
 class ZImageMeanCacheWrapper:
     """
     A wrapper for Z-Image transformer that enables MeanCache acceleration.
     
-    This wrapper intercepts forward() calls and decides whether to:
-    1. Compute the actual velocity (first few steps, or when needed)
-    2. Use cached JVP-corrected velocity (when stable)
+    Uses PSSP scheduler to pre-compute a FIXED skip schedule,
+    then follows that schedule during sampling.
     """
     
     def __init__(
@@ -166,6 +283,7 @@ class ZImageMeanCacheWrapper:
         transformer: torch.nn.Module,
         preset: str = "balanced",
         enabled: bool = True,
+        total_steps: int = 30,
     ):
         self.transformer = transformer
         self.enabled = enabled
@@ -173,6 +291,19 @@ class ZImageMeanCacheWrapper:
         
         # Get config from preset
         self.config = MEANCACHE_PRESETS.get(preset, MEANCACHE_PRESETS["balanced"])
+        
+        # Initialize PSSP scheduler with fixed schedule
+        self.scheduler = TrajectoryScheduler(
+            total_steps=total_steps,
+            skip_budget=self.config['skip_budget'],
+            gamma=self.config['gamma'],
+            peak_threshold=self.config['peak_threshold'],
+        )
+        
+        # Log the pre-computed schedule
+        summary = self.scheduler.get_schedule_summary()
+        logger.info(f"[MeanCache] Pre-computed schedule: {summary['scheduled_skips']}/{summary['total_steps']} steps will be skipped")
+        logger.info(f"[MeanCache] Skip indices: {summary['skip_indices']}")
         
         # Initialize state
         self.state = MeanCacheState(cache_device='cpu', max_cache_span=3)
@@ -198,47 +329,43 @@ class ZImageMeanCacheWrapper:
     ) -> Any:
         """
         Forward pass with MeanCache acceleration for Z-Image.
-        
-        The transformer returns output with .sample attribute containing a list of tensors.
+        Uses pre-computed PSSP schedule for consistent skip decisions.
         """
         if not self.enabled:
             return self.transformer(latent_list, timestep, prompt_embedding, **kwargs)
         
-        # Get current sigma (normalized timestep 0-1, decreasing)
+        # Get current sigma (normalized timestep 0-1)
         current_sigma = float(timestep.flatten()[0])
         
-        # Check step index for each prediction in batch
         batch_size = len(latent_list)
         
-        # Process each prediction in the batch
-        outputs = []
-        can_skip_all = True
+        # Get step index from state (use pred_id=0 as reference)
+        pred_state = self.state.get_or_create(0)
+        step_index = pred_state['step_index']
         
-        for pred_id in range(batch_size):
-            pred_state = self.state.get_or_create(pred_id)
-            step_index = pred_state['step_index']
+        # Check if in active range (skip first few steps)
+        in_active_range = step_index >= self.config['start_step']
+        
+        # Get skip decision from pre-computed schedule
+        should_skip = False
+        if in_active_range and pred_state['v_cache'] is not None:
+            accumulated_error = pred_state.get('accumulated_error', 0.0)
+            # Velocity similarity from last step (use cached deviation)
+            velocity_similarity = accumulated_error
             
-            # Check if in active range (skip first few steps)
-            in_active_range = step_index >= self.config['start_step']
-            
-            if not in_active_range or pred_state['v_cache'] is None:
-                can_skip_all = False
-                break
-            
-            # Check skip decision based on accumulated error
-            accumulated_error = pred_state.get('accumulated_error', 1.0)
-            should_skip, _ = should_skip_step(
-                stability_deviation=accumulated_error,
-                threshold=self.config['rel_l1_thresh'],
+            should_skip, new_error = self.scheduler.get_skip_decision(
+                step_index=step_index,
+                velocity_similarity=velocity_similarity,
                 accumulated_error=accumulated_error
             )
             
-            if not should_skip:
-                can_skip_all = False
-                break
+            # Update accumulated error for all predictions
+            for pid in range(batch_size):
+                self.state.get_or_create(pid)['accumulated_error'] = new_error
         
-        if can_skip_all:
-            # All predictions can be skipped - apply JVP correction
+        if should_skip:
+            # SKIP: Apply JVP correction to cached velocity
+            outputs = []
             for pred_id in range(batch_size):
                 pred_state = self.state.get_or_create(pred_id)
                 v_cache = pred_state['v_cache'].to(latent_list[0].device)
@@ -247,26 +374,27 @@ class ZImageMeanCacheWrapper:
                 
                 if jvp_cache is not None:
                     # Apply JVP correction: v_corrected = v_cache + dt * JVP
-                    dt = sigma_cache - current_sigma  # sigma decreases
+                    # Z-Image: normalized_timestep INCREASES, so current > cache
+                    dt = current_sigma - sigma_cache
                     jvp_device = jvp_cache.to(latent_list[0].device)
                     v_corrected = v_cache + dt * jvp_device
                     outputs.append(v_corrected)
                 else:
                     outputs.append(v_cache)
                 
-                pred_state['skipped_steps'].append(pred_state['step_index'])
+                pred_state['skipped_steps'].append(step_index)
                 pred_state['step_index'] += 1
             
             self.total_steps += 1
             self.skipped_steps += 1
             
-            # Return fake output structure
+            # Return fake output structure matching transformer output
             class FakeOutput:
                 def __init__(self, sample):
                     self.sample = sample
             return FakeOutput(sample=outputs)
         
-        # Need to compute - run full transformer
+        # COMPUTE: Run full transformer
         self.total_steps += 1
         self.computed_steps += 1
         
@@ -295,18 +423,19 @@ class ZImageMeanCacheWrapper:
                         jvp = jvp_k
                         break
             
-            # Compute deviation for adaptive skip decision using paper's L_K metric
+            # Compute deviation for next step's skip decision
             v_cache_old = pred_state.get('v_cache')
             jvp_cache_old = pred_state.get('jvp_cache')
             sigma_cache_old = pred_state.get('sigma_cache')
             
             if v_cache_old is not None and jvp_cache_old is not None and sigma_cache_old is not None:
-                dt_elapsed = sigma_cache_old - current_sigma
+                # Z-Image: normalized_timestep INCREASES, so current > cache
+                dt_elapsed = current_sigma - sigma_cache_old
                 deviation = compute_online_L_K(v_current, v_cache_old, jvp_cache_old, dt_elapsed)
             elif v_cache_old is not None:
                 deviation = compute_velocity_similarity(v_current, v_cache_old)
             else:
-                deviation = 1.0  # Force compute on first step
+                deviation = 0.0  # First step
             
             pred_state['accumulated_error'] = deviation
             
@@ -331,6 +460,7 @@ class ZImageMeanCacheWrapper:
             "computed_steps": self.computed_steps,
             "skip_rate": skip_rate,
             "speedup": speedup,
+            "scheduled_skip_indices": self.scheduler.get_schedule_summary()['skip_indices'],
         }
     
     def print_summary(self):

@@ -15,7 +15,7 @@ class SampleParamsWindow(ctk.CTkToplevel):
         self.ui_state = ui_state
 
         self.title("Sample")
-        self.geometry("800x500")
+        self.geometry("800x600")
         self.resizable(True, True)
 
         self.grid_rowconfigure(0, weight=1)

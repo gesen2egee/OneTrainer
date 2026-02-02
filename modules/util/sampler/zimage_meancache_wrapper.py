@@ -1,15 +1,155 @@
 """
 MeanCache Wrapper for Z-Image Flow Matching Models
 
-This module implements a lightweight wrapper specifically for Z-Image transformer,
-intercepting forward calls to enable MeanCache acceleration.
+Based on UnicomAI MeanCache paper:
+"From Instantaneous to Average Velocity for Accelerating Flow Matching Inference"
+Reference: https://unicomai.github.io/MeanCache/
+
+Key formulas:
+- JVP approximation: JVP_{r→t} ≈ (v_t - v_r) / (t - r)
+- Average velocity: û(z_t, t, s) = v(z_t, t) + (s - t) · JVP_{r→t}
+- Stability deviation: L_K measures retrospective JVP accuracy
 """
 
 import torch
-from typing import Any
+from typing import Optional, Dict, Any, List
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Preset configurations
+MEANCACHE_PRESETS = {
+    "quality": {"rel_l1_thresh": 0.20, "skip_budget": 0.25, "start_step": 3},   # ~1.3x
+    "balanced": {"rel_l1_thresh": 0.15, "skip_budget": 0.35, "start_step": 2},  # ~1.5x  
+    "speed": {"rel_l1_thresh": 0.12, "skip_budget": 0.42, "start_step": 2},     # ~1.7x
+    "turbo": {"rel_l1_thresh": 0.10, "skip_budget": 0.50, "start_step": 1},     # ~2.0x
+}
+
+
+class MeanCacheState:
+    """Manages state across sampling steps for MeanCache algorithm."""
+    
+    def __init__(self, cache_device: str = 'cpu', max_cache_span: int = 3):
+        self.cache_device = cache_device
+        self.max_cache_span = max_cache_span
+        self.states: Dict[int, Dict[str, Any]] = {}
+        
+    def get_or_create(self, pred_id: int) -> Dict[str, Any]:
+        """Get existing state or create new one."""
+        if pred_id not in self.states:
+            self.states[pred_id] = {
+                'v_cache': None,           # Cached velocity for skip reuse
+                'jvp_cache': None,         # Cached JVP for velocity correction
+                'sigma_cache': None,       # Sigma at which v_cache was computed
+                'v_history': [],           # Recent K velocities
+                't_history': [],           # Corresponding timesteps
+                'accumulated_error': 0.0,  # Accumulated error for adaptive thresholding
+                'skipped_steps': [],       # List of skipped step indices
+                'step_index': 0,           # Current step counter
+            }
+        return self.states[pred_id]
+    
+    def update_history(self, pred_id: int, velocity: torch.Tensor, timestep: float):
+        """Update velocity and timestep history for JVP_K computation."""
+        state = self.get_or_create(pred_id)
+        v_cached = velocity.detach().clone().to(self.cache_device)
+        state['v_history'].append(v_cached)
+        state['t_history'].append(timestep)
+        
+        # Maintain sliding window
+        max_len = self.max_cache_span + 1
+        if len(state['v_history']) > max_len:
+            old_v = state['v_history'].pop(0)
+            del old_v
+            state['t_history'].pop(0)
+    
+    def get_jvp_k(self, pred_id: int, k: int, eps: float = 1e-8) -> Optional[torch.Tensor]:
+        """Compute JVP with cache span K from stored history."""
+        state = self.get_or_create(pred_id)
+        v_history = state['v_history']
+        t_history = state['t_history']
+        
+        if len(v_history) < k + 1:
+            return None
+        
+        v_now = v_history[-1]
+        v_k_ago = v_history[-(k + 1)]
+        t_now = t_history[-1]
+        t_k_ago = t_history[-(k + 1)]
+        
+        dt = t_k_ago - t_now  # sigma decreases, so t_k_ago > t_now
+        if abs(dt) < eps:
+            return None
+        
+        return (v_now - v_k_ago.to(v_now.device)) / dt
+    
+    def clear_all(self):
+        """Reset all states between sampling runs."""
+        for state in self.states.values():
+            for v in state.get('v_history', []):
+                del v
+        self.states = {}
+
+
+def get_optimal_k(sigma: float, max_k: int = 3) -> int:
+    """Select optimal JVP lookback K based on sigma (noise level)."""
+    if sigma > 0.5:
+        return 1  # Early: fast changes, short lookback
+    elif sigma > 0.2:
+        return min(max_k, 2)
+    elif sigma > 0.1:
+        return min(max_k, 3)
+    else:
+        return max_k  # Late: stable, max smoothing
+
+
+def compute_online_L_K(
+    v_new: torch.Tensor,
+    v_cached: torch.Tensor,
+    jvp_cached: torch.Tensor,
+    dt_elapsed: float,
+    eps: float = 1e-8
+) -> float:
+    """
+    Compute online approximation of paper's L_K stability deviation.
+    
+    Measures retrospective JVP accuracy: how accurate was the cached
+    JVP extrapolation at predicting the new velocity?
+    
+    L_K ≈ ||v_new - (v_cached + dt * JVP_cached)|| / ||v_new||
+    """
+    predicted_v = v_cached.to(v_new.device) + dt_elapsed * jvp_cached.to(v_new.device)
+    prediction_error = torch.abs(v_new - predicted_v).mean()
+    normalizer = torch.abs(v_new).mean() + eps
+    return (prediction_error / normalizer).item()
+
+
+def compute_velocity_similarity(v_current: torch.Tensor, v_cache: torch.Tensor) -> float:
+    """Compute relative L1 distance for quick similarity check."""
+    v_cache = v_cache.to(v_current.device)
+    l1_distance = torch.abs(v_current - v_cache).mean()
+    norm = torch.abs(v_cache).mean() + 1e-8
+    return (l1_distance / norm).item()
+
+
+def should_skip_step(
+    stability_deviation: float,
+    threshold: float,
+    accumulated_error: float,
+    max_accumulated: float = 0.5
+) -> tuple[bool, float]:
+    """Decide whether to skip current step based on stability deviation."""
+    # Adaptive threshold with peak suppression
+    accumulation_factor = 1.0 - (accumulated_error / max_accumulated)
+    effective_threshold = threshold * max(0.1, accumulation_factor)
+    
+    if stability_deviation < effective_threshold:
+        new_accumulated = accumulated_error + stability_deviation
+        if new_accumulated < max_accumulated:
+            return True, new_accumulated
+    
+    # Reset accumulated error on compute
+    return False, 0.0
 
 
 class ZImageMeanCacheWrapper:
@@ -27,37 +167,24 @@ class ZImageMeanCacheWrapper:
         preset: str = "balanced",
         enabled: bool = True,
     ):
-        """
-        Initialize MeanCache wrapper for Z-Image.
-        
-        Args:
-            transformer: The Z-Image transformer model
-            preset: Preset profile ("quality", "balanced", "speed", "turbo")
-            enabled: Whether MeanCache is enabled
-        """
         self.transformer = transformer
         self.enabled = enabled
         self.preset = preset
         
-        # Preset configurations  
-        self.presets = {
-            "quality": {"skip_threshold": 0.15, "target_skip_rate": 0.30},  # ~1.4x
-            "balanced": {"skip_threshold": 0.12, "target_skip_rate": 0.40}, # ~1.67x
-            "speed": {"skip_threshold": 0.10, "target_skip_rate": 0.45},    # ~1.8x
-            "turbo": {"skip_threshold": 0.08, "target_skip_rate": 0.50},    # ~2.0x
-        }
+        # Get config from preset
+        self.config = MEANCACHE_PRESETS.get(preset, MEANCACHE_PRESETS["balanced"])
         
-        self.config = self.presets.get(preset, self.presets["balanced"])
+        # Initialize state
+        self.state = MeanCacheState(cache_device='cpu', max_cache_span=3)
         
-        # State tracking
-        self.reset_state()
+        # Statistics
+        self.total_steps = 0
+        self.skipped_steps = 0
+        self.computed_steps = 0
         
     def reset_state(self):
         """Reset internal state for a new sampling run."""
-        self.prev_velocity = None
-        self.prev_timestep = None
-        self.prev_jvp = None
-        
+        self.state.clear_all()
         self.total_steps = 0
         self.skipped_steps = 0
         self.computed_steps = 0
@@ -72,109 +199,126 @@ class ZImageMeanCacheWrapper:
         """
         Forward pass with MeanCache acceleration for Z-Image.
         
-        Args:
-            latent_list: List of latent tensors
-            timestep: Normalized timestep (0-1)
-            prompt_embedding: Text encoder embeddings
-            **kwargs: Additional arguments
-            
-        Returns:
-            Model output (with .sample attribute)
+        The transformer returns output with .sample attribute containing a list of tensors.
         """
         if not self.enabled:
             return self.transformer(latent_list, timestep, prompt_embedding, **kwargs)
         
-        self.total_steps += 1
+        # Get current sigma (normalized timestep 0-1, decreasing)
+        current_sigma = float(timestep.flatten()[0])
         
-        # First step always computes
-        if self.prev_velocity is None:
-            output = self._compute(latent_list, timestep, prompt_embedding, **kwargs)
-            self.prev_velocity = self._extract_velocity(output)
-            self.prev_timestep = timestep
-            self.computed_steps += 1
-            logger.debug(f"[MeanCache] Step {self.total_steps}: Initial computation")
-            return output
+        # Check step index for each prediction in batch
+        batch_size = len(latent_list)
         
-        # Compute JVP approximation
-        dt = timestep - self.prev_timestep
+        # Process each prediction in the batch
+        outputs = []
+        can_skip_all = True
         
-        # Try to use cached JVP-corrected velocity
-        if self.prev_jvp is not None and self._should_skip():
-            # Skip this step, use predicted velocity
-            predicted_velocity = self.prev_velocity + dt * self.prev_jvp
+        for pred_id in range(batch_size):
+            pred_state = self.state.get_or_create(pred_id)
+            step_index = pred_state['step_index']
+            
+            # Check if in active range (skip first few steps)
+            in_active_range = step_index >= self.config['start_step']
+            
+            if not in_active_range or pred_state['v_cache'] is None:
+                can_skip_all = False
+                break
+            
+            # Check skip decision based on accumulated error
+            accumulated_error = pred_state.get('accumulated_error', 1.0)
+            should_skip, _ = should_skip_step(
+                stability_deviation=accumulated_error,
+                threshold=self.config['rel_l1_thresh'],
+                accumulated_error=accumulated_error
+            )
+            
+            if not should_skip:
+                can_skip_all = False
+                break
+        
+        if can_skip_all:
+            # All predictions can be skipped - apply JVP correction
+            for pred_id in range(batch_size):
+                pred_state = self.state.get_or_create(pred_id)
+                v_cache = pred_state['v_cache'].to(latent_list[0].device)
+                jvp_cache = pred_state.get('jvp_cache')
+                sigma_cache = pred_state.get('sigma_cache', current_sigma)
+                
+                if jvp_cache is not None:
+                    # Apply JVP correction: v_corrected = v_cache + dt * JVP
+                    dt = sigma_cache - current_sigma  # sigma decreases
+                    jvp_device = jvp_cache.to(latent_list[0].device)
+                    v_corrected = v_cache + dt * jvp_device
+                    outputs.append(v_corrected)
+                else:
+                    outputs.append(v_cache)
+                
+                pred_state['skipped_steps'].append(pred_state['step_index'])
+                pred_state['step_index'] += 1
+            
+            self.total_steps += 1
             self.skipped_steps += 1
-            logger.debug(f"[MeanCache] Step {self.total_steps}: SKIPPED (t={float(timestep):.4f})")
             
-            # Return a fake output with the predicted velocity
-            # Note: This is a simplified version that may need adjustment
-            return self._create_output_from_velocity(predicted_velocity)
+            # Return fake output structure
+            class FakeOutput:
+                def __init__(self, sample):
+                    self.sample = sample
+            return FakeOutput(sample=outputs)
         
-        # Compute actual velocity
-        output = self._compute(latent_list, timestep, prompt_embedding, **kwargs)
-        velocity = self._extract_velocity(output)
+        # Need to compute - run full transformer
+        self.total_steps += 1
         self.computed_steps += 1
-        logger.debug(f"[MeanCache] Step {self.total_steps}: Computed (t={float(timestep):.4f})")
         
-        # Update JVP
-        if dt.abs() > 1e-6:
-            self.prev_jvp = (velocity - self.prev_velocity) / dt
+        output = self.transformer(latent_list, timestep, prompt_embedding, **kwargs)
+        
+        # Update state for each prediction
+        for pred_id in range(batch_size):
+            pred_state = self.state.get_or_create(pred_id)
             
-        self.prev_velocity = velocity
-        self.prev_timestep = timestep
+            # Get the velocity output for this prediction
+            v_current = output.sample[pred_id]
+            
+            # Update velocity history for JVP_K computation
+            self.state.update_history(pred_id, v_current, current_sigma)
+            
+            # Try to compute JVP using multi-step history
+            jvp = None
+            optimal_k = get_optimal_k(current_sigma, self.state.max_cache_span)
+            jvp = self.state.get_jvp_k(pred_id, optimal_k)
+            
+            # Fallback to smaller K if optimal not available
+            if jvp is None:
+                for k in range(optimal_k - 1, 0, -1):
+                    jvp_k = self.state.get_jvp_k(pred_id, k)
+                    if jvp_k is not None:
+                        jvp = jvp_k
+                        break
+            
+            # Compute deviation for adaptive skip decision using paper's L_K metric
+            v_cache_old = pred_state.get('v_cache')
+            jvp_cache_old = pred_state.get('jvp_cache')
+            sigma_cache_old = pred_state.get('sigma_cache')
+            
+            if v_cache_old is not None and jvp_cache_old is not None and sigma_cache_old is not None:
+                dt_elapsed = sigma_cache_old - current_sigma
+                deviation = compute_online_L_K(v_current, v_cache_old, jvp_cache_old, dt_elapsed)
+            elif v_cache_old is not None:
+                deviation = compute_velocity_similarity(v_current, v_cache_old)
+            else:
+                deviation = 1.0  # Force compute on first step
+            
+            pred_state['accumulated_error'] = deviation
+            
+            # Cache current velocity, JVP, and sigma
+            pred_state['v_cache'] = v_current.detach().clone().to(self.state.cache_device)
+            pred_state['sigma_cache'] = current_sigma
+            if jvp is not None:
+                pred_state['jvp_cache'] = jvp.detach().clone().to(self.state.cache_device)
+            
+            pred_state['step_index'] += 1
         
         return output
-    
-    def _compute(self, latent_list, timestep, prompt_embedding, **kwargs):
-        """Compute velocity from the underlying transformer."""
-        return self.transformer(latent_list, timestep, prompt_embedding, **kwargs)
-    
-    def _extract_velocity(self, output):
-        """Extract velocity from model output."""
-        # Z-Image returns output with .sample attribute
-        if hasattr(output, 'sample'):
-            # Stack the list of tensors
-            return -torch.stack(output.sample, dim=0)
-        else:
-            return output
-    
-    def _create_output_from_velocity(self, velocity):
-        """
-        Create a fake output structure from predicted velocity.
-        
-        NOTE: This is a simplified implementation. The actual Z-Image output
-        structure may be more complex and require proper handling.
-        """
-        # Create a simple object with .sample attribute
-        class FakeOutput:
-            def __init__(self, sample):
-                self.sample = sample
-        
-        # Un-stack the velocity back to list format
-        velocity_list = list(velocity.unbind(dim=0))
-        return FakeOutput(sample=velocity_list)
-    
-    def _should_skip(self) -> bool:
-        """
-        Decide whether to skip this step based on heuristic.
-        
-        Uses a simple target-based approach:
-        - Skip more in the middle of trajectory (0.3 < t < 0.7)
-        - Skip less at the beginning and end
-        """
-        current_skip_rate = self.skipped_steps / max(self.total_steps, 1)
-        target_rate = self.config["target_skip_rate"]
-        
-        # Skip more aggressively in middle of trajectory
-        if self.prev_timestep is not None:
-            t_val = float(self.prev_timestep)
-            if 0.3 < t_val < 0.7:
-                adjusted_target = target_rate * 1.2
-            else:
-                adjusted_target = target_rate * 0.8
-        else:
-            adjusted_target = target_rate
-        
-        return current_skip_rate < adjusted_target
     
     def get_stats(self) -> dict:
         """Get sampling statistics."""
@@ -192,7 +336,7 @@ class ZImageMeanCacheWrapper:
     def print_summary(self):
         """Print sampling summary to console."""
         stats = self.get_stats()
-        logger.info(
+        print(
             f"[MeanCache] Sampling complete ({self.preset}): "
             f"{stats['total_steps']} steps, "
             f"{stats['skipped_steps']} skipped, "

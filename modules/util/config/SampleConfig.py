@@ -75,6 +75,7 @@ class SampleConfig(BaseConfig):
         data.append(("base_image_path", "", str, False))
         data.append(("mask_image_path", "", str, False))
 
+        # MeanCache (experimental - currently disabled by default)
         data.append(("use_meancache", False, bool, False))
         data.append(("meancache_preset", "balanced", str, False))
 

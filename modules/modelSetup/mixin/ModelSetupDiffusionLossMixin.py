@@ -338,6 +338,47 @@ class ModelSetupDiffusionLossMixin(metaclass=ABCMeta):
                 case LossWeight.SIGMA:
                     losses *= self.__sigma_loss_weight(data['timestep'], losses.device)
                 case _:
-                    raise NotImplementedError(f"Loss weight function {config.loss_weight_fn} not implemented for flow matching models")
+                    # For other weighting functions, we simulate SNR based on sigma
+                    # SNR = 1 / sigma^2
+                    sigmas = self.__sigmas[data['timestep']].to(losses.device)
+                    # Clamp sigma to avoid division by zero (though sigma starts from 1/N)
+                    sigmas = torch.clamp(sigmas, min=1e-4)
+                    snr = 1.0 / (sigmas ** 2)
+
+                    # Flow Matching predicts velocity, which is conceptually similar to v-prediction
+                    v_pred = True 
+                    
+                    # Reuse the logic from diffusion weighting functions, but we must implement duplicates or extract logic
+                    # Since private methods __min_snr_weight etc take timesteps and compute SNR internally, 
+                    # we cannot easily reuse them without refactoring __snr method or duplicating logic.
+                    # Best approach: Refactor __snr or implement logic here directly using calculate 'snr' tensor.
+                    
+                    # Implementation of weights given 'snr' tensor:
+                    match config.loss_weight_fn:
+                        case LossWeight.MIN_SNR_GAMMA:
+                             # Logic from __min_snr_weight
+                             # For v-prediction (which Flow Matching is similar to), the paper recommends:
+                             # weight = min(SNR, gamma) / (SNR + 1)
+                             # This clamps the effective optimization strength to gamma.
+                             min_snr_gamma = torch.minimum(snr, torch.full_like(snr, config.loss_weight_strength))
+                             if v_pred: snr_adj = snr + 1.0
+                             else: snr_adj = snr
+                             losses *= (min_snr_gamma / snr_adj)
+                             
+                        case LossWeight.DEBIASED_ESTIMATION:
+                             # Logic from __debiased_estimation_weight
+                             weight = snr.clone()
+                             torch.clip(weight, max=1.0e3, out=weight)
+                             if v_pred: weight += 1.0
+                             torch.rsqrt(weight, out=weight)
+                             losses *= weight
+                             
+                        case LossWeight.P2:
+                             # Logic from __p2_loss_weight
+                             snr_adj = snr + 1.0 if v_pred else snr
+                             losses *= (1.0 + snr_adj) ** -config.loss_weight_strength
+                             
+                        case _:
+                            raise NotImplementedError(f"Loss weight function {config.loss_weight_fn} not implemented for flow matching models")
 
         return losses

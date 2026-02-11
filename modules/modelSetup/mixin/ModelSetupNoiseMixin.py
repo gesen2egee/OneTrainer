@@ -89,6 +89,30 @@ class ModelSetupNoiseMixin(metaclass=ABCMeta):
             dtype=source_tensor.dtype
         )
 
+        per_channel_shape = (
+            source_tensor.shape[0],
+            source_tensor.shape[1],
+            *[1 for _ in range(source_tensor.ndim - 2)],
+        )
+
+        if config.random_noise_shift > 0:
+            noise_shift = torch.randn(
+                per_channel_shape,
+                generator=generator,
+                device=config.train_device,
+                dtype=source_tensor.dtype,
+            ) * config.random_noise_shift
+            noise = noise + noise_shift
+
+        if config.random_noise_multiplier > 0:
+            noise_multiplier = torch.exp(torch.randn(
+                per_channel_shape,
+                generator=generator,
+                device=config.train_device,
+                dtype=source_tensor.dtype,
+            ) * config.random_noise_multiplier)
+            noise = noise * noise_multiplier
+
         if config.offset_noise_weight > 0:
             offset_noise = torch.randn(
                 (source_tensor.shape[0], source_tensor.shape[1], *[1 for _ in range(source_tensor.ndim - 2)]),

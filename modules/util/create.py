@@ -1091,10 +1091,10 @@ def create_optimizer(
                 sinkgd_iters=optimizer_config.sinkgd_iters if optimizer_config.sinkgd_iters is not None else 1,
                 beta1=optimizer_config.beta1 if optimizer_config.beta1 is not None else 0.9,
                 weight_decay=optimizer_config.weight_decay if optimizer_config.weight_decay is not None else 0.1,
-                warmup_steps=int(config.learning_rate_warmup_steps) if config.learning_rate_warmup_steps is not None else 200,
-                max_lr=optimizer_config.max_lr if optimizer_config.max_lr is not None else 300,
+                cautious_wd=optimizer_config.cautious_wd if optimizer_config.cautious_wd is not None else True,
+                max_lr=optimizer_config.max_lr if optimizer_config.max_lr is not None else 10000,
                 min_lr=optimizer_config.min_lr if optimizer_config.min_lr is not None else 10,
-                lr_bump=optimizer_config.lr_bump if optimizer_config.lr_bump is not None else 0,
+                lr_bump=optimizer_config.lr_bump if optimizer_config.lr_bump is not None else 1,
                 use_kahan=optimizer_config.use_kahan if optimizer_config.use_kahan is not None else True,
             )
 

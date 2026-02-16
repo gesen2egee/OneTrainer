@@ -699,9 +699,10 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "sinkgd_iters": 1,
         "beta1": 0.9,
         "weight_decay": 0.1,
-        "max_lr": 300,
+        "cautious_wd": True,
+        "max_lr": 10000,
         "min_lr": 10,
-        "lr_bump": 0,
+        "lr_bump": 1,
         "use_kahan": True,
     },
 }

@@ -16,6 +16,39 @@ class ModelSetupNoiseMixin(metaclass=ABCMeta):
         self.__weights = None
         self._offset_noise_psi_schedule: Tensor | None = None
 
+    @staticmethod
+    def _is_out_of_memory_error(error: Exception) -> bool:
+        if isinstance(error, torch.cuda.OutOfMemoryError):
+            return True
+        if isinstance(error, RuntimeError):
+            error_message = str(error).lower()
+            return "out of memory" in error_message
+        return False
+
+    @staticmethod
+    def _create_immiscible_knn_noise(
+            source_tensor: Tensor,
+            generator: Generator,
+            train_device: str,
+            k: int,
+    ) -> Tensor:
+        candidate_noise = torch.randn(
+            (source_tensor.shape[0], k, source_tensor.shape[1], *source_tensor.shape[2:]),
+            generator=generator,
+            device=train_device,
+            dtype=source_tensor.dtype,
+        )
+
+        source_points = source_tensor.flatten(start_dim=1).to(dtype=torch.float32)
+        noise_points = candidate_noise.flatten(start_dim=2).to(dtype=torch.float32)
+
+        distance_points = source_points.unsqueeze(1) - noise_points
+        distances = torch.linalg.vector_norm(distance_points, dim=2)
+
+        min_index = torch.argmin(distances, dim=1)
+        batch_index = torch.arange(source_tensor.shape[0], device=min_index.device, dtype=torch.long)
+        return candidate_noise[batch_index, min_index]
+
     def _compute_and_cache_offset_noise_psi_schedule(self, betas: Tensor) -> Tensor:
         """
         Computes the time-dependent psi_t coefficients for generalized offset noise.
@@ -82,12 +115,36 @@ class ModelSetupNoiseMixin(metaclass=ABCMeta):
             timestep: Tensor | None = None,
             betas: Tensor | None = None,
     ) -> Tensor:
-        noise = torch.randn(
-            source_tensor.shape,
-            generator=generator,
-            device=config.train_device,
-            dtype=source_tensor.dtype
-        )
+        knn_k = int(getattr(config, "immiscible_knn_k", 0))
+        use_immiscible_knn = config.model_type.is_z_image() and knn_k > 0
+
+        if use_immiscible_knn:
+            try:
+                noise = self._create_immiscible_knn_noise(
+                    source_tensor=source_tensor,
+                    generator=generator,
+                    train_device=config.train_device,
+                    k=knn_k,
+                )
+            except Exception as error:  # noqa: BLE001
+                if self._is_out_of_memory_error(error):
+                    if source_tensor.is_cuda:
+                        torch.cuda.empty_cache()
+                    noise = torch.randn(
+                        source_tensor.shape,
+                        generator=generator,
+                        device=config.train_device,
+                        dtype=source_tensor.dtype,
+                    )
+                else:
+                    raise
+        else:
+            noise = torch.randn(
+                source_tensor.shape,
+                generator=generator,
+                device=config.train_device,
+                dtype=source_tensor.dtype
+            )
 
         per_channel_shape = (
             source_tensor.shape[0],

@@ -3,7 +3,9 @@ from collections.abc import Callable
 
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.DiffusionScheduleCoefficients import DiffusionScheduleCoefficients
+from modules.util.enum.LossPreset import LossPreset
 from modules.util.enum.LossWeight import LossWeight
+from modules.util.loss.cwmi_loss import CWMILoss
 from modules.util.loss.masked_loss import masked_losses, masked_losses_with_prior
 from modules.util.loss.vb_loss import vb_losses
 
@@ -16,12 +18,14 @@ class ModelSetupDiffusionLossMixin(metaclass=ABCMeta):
     __coefficients: DiffusionScheduleCoefficients | None
     __alphas_cumprod_fun: Callable[[Tensor, int], Tensor] | None
     __sigmas: Tensor | None
+    __cwmi_loss_cache: dict[tuple[int, int, float, str], CWMILoss]
 
     def __init__(self):
         super().__init__()
         self.__coefficients = None
         self.__alphas_cumprod_fun = None
         self.__sigmas = None
+        self.__cwmi_loss_cache = {}
 
     def __log_cosh_loss(
             self,
@@ -32,12 +36,103 @@ class ModelSetupDiffusionLossMixin(metaclass=ABCMeta):
         loss = diff + torch.nn.functional.softplus(-2.0*diff) - torch.log(torch.full(size=diff.size(), fill_value=2.0, dtype=torch.float32, device=diff.device))
         return loss
 
+    @staticmethod
+    def __expand_mask(mask: Tensor, target_ndim: int) -> Tensor:
+        expanded = mask
+        while expanded.ndim < target_ndim:
+            expanded = expanded.unsqueeze(2)
+        return expanded
+
+    def __get_cwmi_loss(
+            self,
+            config: TrainConfig,
+            device: torch.device,
+    ) -> CWMILoss:
+        cache_key = (config.cwmi_levels, config.cwmi_orientations, float(config.cwmi_eps), str(device))
+        cwmi_loss = self.__cwmi_loss_cache.get(cache_key)
+        if cwmi_loss is None:
+            cwmi_loss = CWMILoss(
+                levels=config.cwmi_levels,
+                orientations=config.cwmi_orientations,
+                eps=config.cwmi_eps,
+            ).to(device=device)
+            self.__cwmi_loss_cache[cache_key] = cwmi_loss
+        return cwmi_loss
+
+    def __cwmi_unmasked_losses(
+            self,
+            data: dict,
+            config: TrainConfig,
+    ) -> Tensor:
+        predicted = data['predicted'].to(dtype=torch.float32)
+        target = data['target'].to(dtype=torch.float32)
+        mean_dim = list(range(1, predicted.ndim))
+
+        l2_sample = F.mse_loss(predicted, target, reduction='none').mean(mean_dim)
+        cwmi_loss = self.__get_cwmi_loss(config, predicted.device)
+        cwmi_sample = cwmi_loss(target, predicted).to(dtype=torch.float32)
+
+        return (1.0 - config.cwmi_lambda) * cwmi_sample + config.cwmi_lambda * l2_sample
+
+    def __cwmi_masked_losses(
+            self,
+            batch: dict,
+            data: dict,
+            config: TrainConfig,
+    ) -> Tensor:
+        predicted = data['predicted'].to(dtype=torch.float32)
+        target = data['target'].to(dtype=torch.float32)
+        mean_dim = list(range(1, predicted.ndim))
+
+        mask = self.__expand_mask(batch['latent_mask'].to(dtype=torch.float32), predicted.ndim)
+        l2_sample = masked_losses_with_prior(
+            losses=F.mse_loss(
+                predicted,
+                target,
+                reduction='none',
+            ),
+            prior_losses=F.mse_loss(
+                predicted,
+                data['prior_target'].to(dtype=torch.float32),
+                reduction='none',
+            ) if 'prior_target' in data else None,
+            mask=mask,
+            unmasked_weight=config.unmasked_weight,
+            normalize_masked_area_loss=config.normalize_masked_area_loss,
+            masked_prior_preservation_weight=config.masked_prior_preservation_weight,
+        ).mean(mean_dim)
+
+        cwmi_loss = self.__get_cwmi_loss(config, predicted.device)
+        clamped_mask = torch.clamp(mask, config.unmasked_weight, 1)
+        cwmi_sample = cwmi_loss(target * clamped_mask, predicted * clamped_mask).to(dtype=torch.float32)
+
+        if config.normalize_masked_area_loss:
+            cwmi_sample = cwmi_sample / clamped_mask.mean(mean_dim).clamp_min(1e-6)
+
+        if config.masked_prior_preservation_weight != 0 and 'prior_target' in data:
+            prior_target = data['prior_target'].to(dtype=torch.float32)
+            prior_mask = (1 - clamped_mask) * config.masked_prior_preservation_weight
+            prior_cwmi_sample = cwmi_loss(
+                prior_target * prior_mask,
+                predicted * prior_mask,
+            ).to(dtype=torch.float32)
+
+            if config.normalize_masked_area_loss:
+                prior_cwmi_sample = prior_cwmi_sample / prior_mask.mean(mean_dim).clamp_min(1e-6)
+
+            cwmi_sample += prior_cwmi_sample
+
+        return (1.0 - config.cwmi_lambda) * cwmi_sample + config.cwmi_lambda * l2_sample
+
     def __masked_losses(
             self,
             batch: dict,
             data: dict,
             config: TrainConfig,
     ) -> Tensor:
+        if config.loss_preset == LossPreset.CWMI:
+            return self.__cwmi_masked_losses(batch, data, config)
+
         losses = 0
 
         mean_dim = list(range(1, data['predicted'].ndim))
@@ -142,6 +237,9 @@ class ModelSetupDiffusionLossMixin(metaclass=ABCMeta):
             data: dict,
             config: TrainConfig,
     ) -> Tensor:
+        if config.loss_preset == LossPreset.CWMI:
+            return self.__cwmi_unmasked_losses(data, config)
+
         losses = 0
 
         mean_dim = list(range(1, data['predicted'].ndim))

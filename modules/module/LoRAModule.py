@@ -941,28 +941,32 @@ class LoRAModuleWrapper:
         Hooks the LoRA into the module without changing its weights
         """
         for module in self.lora_modules.values():
-            module.hook_to_module()
+            if not isinstance(module, self.dummy_klass):
+                module.hook_to_module()
 
     def remove_hook_from_module(self):
         """
         Removes the LoRA hook from the module without changing its weights
         """
         for module in self.lora_modules.values():
-            module.remove_hook_from_module()
+            if not isinstance(module, self.dummy_klass):
+                module.remove_hook_from_module()
 
     def apply_to_module(self):
         """
         Applys the LoRA to the module, changing its weights
         """
         for module in self.lora_modules.values():
-            module.apply_to_module()
+            if not isinstance(module, self.dummy_klass):
+                module.apply_to_module()
 
     def extract_from_module(self, base_module: nn.Module):
         """
         Creates a LoRA from the difference between the base_module and the orig_module
         """
         for module in self.lora_modules.values():
-            module.extract_from_module(base_module)
+            if not isinstance(module, self.dummy_klass):
+                module.extract_from_module(base_module)
 
     def prune(self):
         """

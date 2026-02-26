@@ -1,4 +1,5 @@
 from abc import ABCMeta
+import math
 from random import Random
 
 import modules.util.multi_gpu_util as multi
@@ -16,6 +17,7 @@ from modules.util.checkpointing_util import (
 )
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.dtype_util import create_autocast_context, disable_fp16_autocast_context
+from modules.util.enum.CEPNoiseType import CEPNoiseType
 from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.quantization_util import quantize_layers
 from modules.util.torch_util import torch_gc
@@ -109,6 +111,18 @@ class BaseZImageSetup(
                 text_encoder_output=batch.get('text_encoder_hidden_state'),
                 text_encoder_dropout_probability=config.text_encoder.dropout_probability,
             )
+
+            if config.cep_noise_type != CEPNoiseType.NONE:
+                for i in range(len(text_encoder_output)):
+                    d_dim = text_encoder_output[i].shape[-1]
+                    factor = config.cep_gamma / math.sqrt(d_dim)
+                    if config.cep_noise_type == CEPNoiseType.GAUSSIAN:
+                        cep_noise = torch.randn_like(text_encoder_output[i]) * factor
+                        text_encoder_output[i] = text_encoder_output[i] + cep_noise
+                    elif config.cep_noise_type == CEPNoiseType.UNIFORM:
+                        cep_noise = (torch.rand_like(text_encoder_output[i]) * 2 - 1.0) * factor
+                        text_encoder_output[i] = text_encoder_output[i] + cep_noise
+
             scaled_latent_image = model.scale_latents(batch['latent_image'])
 
             latent_noise = self._create_noise(scaled_latent_image, config, generator)

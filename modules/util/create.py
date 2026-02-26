@@ -1153,7 +1153,15 @@ def create_optimizer(
             state_dict['state'] = state
             state_dict['param_groups'] = param_groups
 
-        optimizer.load_state_dict(state_dict)
+        try:
+            optimizer.load_state_dict(state_dict)
+        except ValueError as e:
+            print(f"警告: 無法載入優化器狀態 ({e})")
+            print("提示: 這通常是因為您變更了訓練層的篩選條件（例如開啟了 ATTN ONLY），導致保存的優化器參數數量與當前不一致。")
+            print("系統已自動略過載入優化器狀態，將以全新的優化器狀態繼續訓練。")
+        except Exception as e:
+            print(f"警告: 載入優化器狀態時發生未知錯誤 ({e})")
+            print("系統已自動略過載入優化器狀態。")
 
     return optimizer
 

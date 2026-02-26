@@ -12,12 +12,14 @@ from modules.util.config.SecretsConfig import SecretsConfig
 from modules.util.enum.AudioFormat import AudioFormat
 from modules.util.enum.ConfigPart import ConfigPart
 from modules.util.enum.DataType import DataType
+from modules.util.enum.CEPNoiseType import CEPNoiseType
 from modules.util.enum.EMAMode import EMAMode
 from modules.util.enum.GradientCheckpointingMethod import GradientCheckpointingMethod
 from modules.util.enum.GradientReducePrecision import GradientReducePrecision
 from modules.util.enum.ImageFormat import ImageFormat
 from modules.util.enum.LearningRateScaler import LearningRateScaler
 from modules.util.enum.LearningRateScheduler import LearningRateScheduler
+from modules.util.enum.LossPreset import LossPreset
 from modules.util.enum.LossScaler import LossScaler
 from modules.util.enum.LossWeight import LossWeight
 from modules.util.enum.ModelFormat import ModelFormat
@@ -441,6 +443,11 @@ class TrainConfig(BaseConfig):
     mse_strength: float
     mae_strength: float
     log_cosh_strength: float
+    loss_preset: LossPreset
+    cwmi_lambda: float
+    cwmi_levels: int
+    cwmi_orientations: int
+    cwmi_eps: float
     huber_strength: float
     huber_delta: float
     vb_loss_strength: float
@@ -469,6 +476,9 @@ class TrainConfig(BaseConfig):
     timestep_distribution: TimestepDistribution
     min_noising_strength: float
     max_noising_strength: float
+
+    cep_noise_type: CEPNoiseType
+    cep_gamma: float
 
     noising_weight: float
     noising_bias: float
@@ -1031,6 +1041,11 @@ class TrainConfig(BaseConfig):
         data.append(("mse_strength", 1.0, float, False))
         data.append(("mae_strength", 0.0, float, False))
         data.append(("log_cosh_strength", 0.0, float, False))
+        data.append(("loss_preset", LossPreset.CUSTOM, LossPreset, False))
+        data.append(("cwmi_lambda", 0.1, float, False))
+        data.append(("cwmi_levels", 4, int, False))
+        data.append(("cwmi_orientations", 4, int, False))
+        data.append(("cwmi_eps", 5e-4, float, False))
         data.append(("huber_strength", 0.0, float, False))
         data.append(("huber_delta", 1.0, float, False))
         data.append(("vb_loss_strength", 1.0, float, False))
@@ -1053,6 +1068,8 @@ class TrainConfig(BaseConfig):
         data.append(("force_epsilon_prediction", False, bool, False))
         data.append(("min_noising_strength", 0.0, float, False))
         data.append(("max_noising_strength", 1.0, float, False))
+        data.append(("cep_noise_type", CEPNoiseType.NONE, CEPNoiseType, False))
+        data.append(("cep_gamma", 1.0, float, False))
         data.append(("timestep_distribution", TimestepDistribution.UNIFORM, TimestepDistribution, False))
         data.append(("noising_weight", 0.0, float, False))
         data.append(("noising_bias", 0.0, float, False))

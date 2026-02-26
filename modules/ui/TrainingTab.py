@@ -5,10 +5,12 @@ from modules.ui.TimestepDistributionWindow import TimestepDistributionWindow
 from modules.util import create
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.enum.DataType import DataType
+from modules.util.enum.CEPNoiseType import CEPNoiseType
 from modules.util.enum.EMAMode import EMAMode
 from modules.util.enum.GradientCheckpointingMethod import GradientCheckpointingMethod
 from modules.util.enum.LearningRateScaler import LearningRateScaler
 from modules.util.enum.LearningRateScheduler import LearningRateScheduler
+from modules.util.enum.LossPreset import LossPreset
 from modules.util.enum.LossScaler import LossScaler
 from modules.util.enum.LossWeight import LossWeight
 from modules.util.enum.Optimizer import Optimizer
@@ -669,6 +671,18 @@ class TrainingTab:
         components.entry(frame, frame_row, 1, self.ui_state, "random_noise_multiplier")
         frame_row += 1
 
+        # cep noise type
+        components.label(frame, frame_row, 0, "CEP Noise Type",
+                         tooltip="Selects the Condition Embedding Perturbation (CEP) noise type. Usually disabled. Only supported on Anima/Z-Image currently.", wide_tooltip=True)
+        components.options(frame, frame_row, 1, [str(x) for x in list(CEPNoiseType)], self.ui_state, "cep_noise_type")
+        frame_row += 1
+
+        # cep gamma
+        components.label(frame, frame_row, 0, "CEP Gamma",
+                         tooltip="Controls the scaling factor of the Condition Embedding Perturbation (CEP) noise. Higher means more noise.")
+        components.entry(frame, frame_row, 1, self.ui_state, "cep_gamma")
+        frame_row += 1
+
         # timestep distribution
         components.label(frame, frame_row, 0, "Timestep Distribution",
                          tooltip="Selects the function to sample timesteps during training",
@@ -761,47 +775,103 @@ class TrainingTab:
         frame.grid(row=row, column=0, padx=5, pady=5, sticky="nsew")
         frame.grid_columnconfigure(0, weight=1)
 
+        # Loss Preset
+        components.label(frame, 0, 0, "Loss Preset",
+                         tooltip="Select CUSTOM to use manual loss strengths, or CWMI to use (1-lambda) * CWMI + lambda * L2.")
+        components.options(frame, 0, 1, [str(x) for x in list(LossPreset)], self.ui_state, "loss_preset")
+
         # MSE Strength
-        components.label(frame, 0, 0, "MSE Strength",
+        components.label(frame, 1, 0, "MSE Strength",
                          tooltip="Mean Squared Error strength for custom loss settings. Strengths should generally sum to 1.")
-        components.entry(frame, 0, 1, self.ui_state, "mse_strength")
+        mse_entry = components.entry(frame, 1, 1, self.ui_state, "mse_strength")
 
         # MAE Strength
-        components.label(frame, 1, 0, "MAE Strength",
+        components.label(frame, 2, 0, "MAE Strength",
                          tooltip="Mean Absolute Error strength for custom loss settings. Strengths should generally sum to 1.")
-        components.entry(frame, 1, 1, self.ui_state, "mae_strength")
+        mae_entry = components.entry(frame, 2, 1, self.ui_state, "mae_strength")
 
         # log-cosh Strength
-        components.label(frame, 2, 0, "log-cosh Strength",
+        components.label(frame, 3, 0, "log-cosh Strength",
                          tooltip="Log - Hyperbolic cosine Error strength for custom loss settings. Strengths should generally sum to 1.")
-        components.entry(frame, 2, 1, self.ui_state, "log_cosh_strength")
+        log_cosh_entry = components.entry(frame, 3, 1, self.ui_state, "log_cosh_strength")
 
         # Huber Strength
-        components.label(frame, 3, 0, "Huber Strength",
+        components.label(frame, 4, 0, "Huber Strength",
                          tooltip="Huber loss strength for custom loss settings. Less sensitive to outliers than MSE. Strengths should generally sum to 1.")
-        components.entry(frame, 3, 1, self.ui_state, "huber_strength")
+        huber_strength_entry = components.entry(frame, 4, 1, self.ui_state, "huber_strength")
 
         # Huber Delta
-        components.label(frame, 4, 0, "Huber Delta",
+        components.label(frame, 5, 0, "Huber Delta",
                          tooltip="Delta parameter for huber loss")
-        components.entry(frame, 4, 1, self.ui_state, "huber_delta")
+        huber_delta_entry = components.entry(frame, 5, 1, self.ui_state, "huber_delta")
+
+        # CWMI lambda
+        components.label(frame, 6, 0, "CWMI Lambda",
+                         tooltip="Mix factor for CWMI mode. Combined loss is (1-lambda) * CWMI + lambda * L2.")
+        cwmi_lambda_entry = components.entry(frame, 6, 1, self.ui_state, "cwmi_lambda")
+
+        # CWMI levels
+        components.label(frame, 7, 0, "CWMI Levels",
+                         tooltip="Pyramid decomposition levels for CWMI.")
+        cwmi_levels_entry = components.entry(frame, 7, 1, self.ui_state, "cwmi_levels")
+
+        # CWMI orientations
+        components.label(frame, 8, 0, "CWMI Orientations",
+                         tooltip="Number of orientation bands in CWMI.")
+        cwmi_orientations_entry = components.entry(frame, 8, 1, self.ui_state, "cwmi_orientations")
+
+        # CWMI eps
+        components.label(frame, 9, 0, "CWMI Epsilon",
+                         tooltip="Numerical stability epsilon for CWMI covariance and Cholesky operations.")
+        cwmi_eps_entry = components.entry(frame, 9, 1, self.ui_state, "cwmi_eps")
+
+        vb_loss_entry = None
 
         if supports_vb_loss:
             # VB Strength
-            components.label(frame, 5, 0, "VB Strength",
+            components.label(frame, 10, 0, "VB Strength",
                              tooltip="Variational lower-bound strength for custom loss settings. Should be set to 1 for variational diffusion models")
-            components.entry(frame, 5, 1, self.ui_state, "vb_loss_strength")
+            vb_loss_entry = components.entry(frame, 10, 1, self.ui_state, "vb_loss_strength")
+
+        loss_weight_row = 11 if supports_vb_loss else 10
+
+        def on_loss_preset_change():
+            selected_preset = self.ui_state.get_var("loss_preset").get()
+            is_cwmi = selected_preset == str(LossPreset.CWMI)
+
+            custom_state = "disabled" if is_cwmi else "normal"
+            cwmi_state = "normal" if is_cwmi else "disabled"
+
+            custom_entries = [
+                mse_entry,
+                mae_entry,
+                log_cosh_entry,
+                huber_strength_entry,
+                huber_delta_entry,
+            ]
+            if vb_loss_entry is not None:
+                custom_entries.append(vb_loss_entry)
+
+            for custom_entry in custom_entries:
+                custom_entry.configure(state=custom_state)
+
+            for cwmi_entry in [cwmi_lambda_entry, cwmi_levels_entry, cwmi_orientations_entry, cwmi_eps_entry]:
+                cwmi_entry.configure(state=cwmi_state)
+
+        self.ui_state.remove_all_var_traces("loss_preset")
+        self.ui_state.add_var_trace("loss_preset", on_loss_preset_change)
+        on_loss_preset_change()
 
         # Loss Weight function
-        components.label(frame, 6, 0, "Loss Weight Function",
+        components.label(frame, loss_weight_row, 0, "Loss Weight Function",
                          tooltip="Choice of loss weight function. Can help the model learn details more accurately.")
-        components.options(frame, 6, 1, [str(x) for x in list(LossWeight)
+        components.options(frame, loss_weight_row, 1, [str(x) for x in list(LossWeight)
                                          if x.supports_flow_matching() == self.train_config.model_type.is_flow_matching()
-                                            or x == LossWeight.CONSTANT
-                                        ],
-                                        self.ui_state, "loss_weight_fn")
+                                             or x == LossWeight.CONSTANT
+                                         ],
+                                         self.ui_state, "loss_weight_fn")
 
-        row = 7
+        row = loss_weight_row + 1
 
         # Loss weight strength
         if not self.train_config.model_type.is_flow_matching():

@@ -10,6 +10,7 @@ from modules.util.config.ConceptConfig import ConceptConfig
 from modules.util.config.SampleConfig import SampleConfig
 from modules.util.config.SecretsConfig import SecretsConfig
 from modules.util.enum.AudioFormat import AudioFormat
+from modules.util.enum.CenteredWDMode import CenteredWDMode
 from modules.util.enum.ConfigPart import ConfigPart
 from modules.util.enum.DataType import DataType
 from modules.util.enum.CEPNoiseType import CEPNoiseType
@@ -153,6 +154,13 @@ class TrainOptimizerConfig(BaseConfig):
     max_lr: int
     lr_bump: int
     use_kahan: bool
+    spectral_normalization: False
+    scaled_optm: False
+    freeze_on_flip: False
+    l1_adaptive: False
+    centered_wd: float
+    centered_wd_mode: CenteredWDMode
+    factored_2nd: False
 
     def __init__(self, data: list[(str, Any, type, bool)]):
         super().__init__(data)
@@ -258,7 +266,7 @@ class TrainOptimizerConfig(BaseConfig):
         data.append(("muon_adam_lr", None, float, True))
         data.append(("muon_te1_adam_lr", None, float, True))
         data.append(("muon_te2_adam_lr", None, float, True))
-        data.append(("muon_adam_config", None, dict, True))
+        data.append(("muon_adam_config", {}, dict, True))
         data.append(("rms_rescaling", True, bool, True))
         data.append(("normuon_variant", False, bool, False))
         data.append(("beta2_normuon", None, float, True))
@@ -279,6 +287,13 @@ class TrainOptimizerConfig(BaseConfig):
         data.append(("max_lr", None, int, True))
         data.append(("lr_bump", None, int, True))
         data.append(("use_kahan",True, bool, False))
+        data.append(("spectral_normalization", False, bool, False))
+        data.append(("scaled_optm", False, bool, False))
+        data.append(("freeze_on_flip", False, bool, False))
+        data.append(("l1_adaptive", False, bool, False))
+        data.append(("centered_wd", 0.0, float, False))
+        data.append(("centered_wd_mode", CenteredWDMode.FLOAT8, CenteredWDMode, False))
+        data.append(("factored_2nd", False, bool, False))
 
         return TrainOptimizerConfig(data)
 
@@ -386,6 +401,7 @@ class TrainConfig(BaseConfig):
     validate_after: float
     validate_after_unit: TimeUnit
     continue_last_backup: bool
+    prevent_overwrites: bool
     include_train_config: ConfigPart
 
     # multi-GPU
@@ -986,6 +1002,7 @@ class TrainConfig(BaseConfig):
         data.append(("validate_after", 1, int, False))
         data.append(("validate_after_unit", TimeUnit.EPOCH, TimeUnit, False))
         data.append(("continue_last_backup", False, bool, False))
+        data.append(("prevent_overwrites", False, bool, False))
         data.append(("include_train_config", ConfigPart.NONE, ConfigPart, False))
 
         #multi-GPU

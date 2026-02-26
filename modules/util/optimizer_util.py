@@ -2,9 +2,9 @@ import modules.util.multi_gpu_util as multi
 from modules.model.BaseModel import BaseModel
 from modules.util import create
 from modules.util.config.TrainConfig import TrainConfig, TrainOptimizerConfig
+from modules.util.enum.CenteredWDMode import CenteredWDMode
 from modules.util.enum.Optimizer import Optimizer
 from modules.util.NamedParameterGroup import NamedParameterGroupCollection
-from modules.util.optimizer.muon_util import build_muon_adam_key_fn
 from modules.util.torch_util import optimizer_to_device_
 
 import torch
@@ -59,13 +59,8 @@ def init_model_parameters(
     #to be safe, do that before the optimizer is created because the optimizer could take copies
     multi.broadcast_parameters(parameters.parameters(), train_device)
 
-    layer_key_fn = None
-    if model.train_config.optimizer.MuonWithAuxAdam:
-        print("INFO: Creating layer keys for MuonWithAuxAdam.")
-        layer_key_fn = build_muon_adam_key_fn(model, model.train_config)
-
     model.optimizer = create.create_optimizer(
-        parameters, model.optimizer_state_dict, model.train_config, layer_key_fn
+        parameters, model.optimizer_state_dict, model.train_config, model=model
     )
 
     if model.optimizer is not None:
@@ -160,7 +155,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "muon_adam_lr": 3e-4,
         "muon_te1_adam_lr": None,
         "muon_te2_adam_lr": None,
-        "muon_adam_config": None,
+        "muon_adam_config": {},
     },
     Optimizer.AdEMAMix_8BIT: {
         "beta1": 0.9,
@@ -456,6 +451,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "weight_decay": 0.0,
         "use_bias_correction": True,
         "nnmf_factor": False,
+        "factored_2nd": False,
         "stochastic_rounding": True,
         "compile": False,
         "fused_back_pass": False,
@@ -468,6 +464,9 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "alpha": 5,
         "kourkoutas_beta": False,
         "k_warmup_steps": None,
+        "scaled_optm": False,
+        "centered_wd": 0.0,
+        "centered_wd_mode": CenteredWDMode.FLOAT8,
     },
     Optimizer.ADOPT_ADV: {
         "beta1": 0.9,
@@ -476,6 +475,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "cautious_wd": False,
         "weight_decay": 0.0,
         "nnmf_factor": False,
+        "factored_2nd": False,
         "stochastic_rounding": True,
         "compile": False,
         "fused_back_pass": False,
@@ -490,6 +490,9 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "alpha_grad": 100.0,
         "kourkoutas_beta": False,
         "k_warmup_steps": None,
+        "scaled_optm": False,
+        "centered_wd": 0.0,
+        "centered_wd_mode": CenteredWDMode.FLOAT8,
     },
     Optimizer.PRODIGY_ADV: {
         "beta1": 0.9,
@@ -499,6 +502,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "cautious_wd": False,
         "weight_decay": 0.0,
         "nnmf_factor": False,
+        "factored_2nd": False,
         "stochastic_rounding": True,
         "compile": False,
         "fused_back_pass": False,
@@ -519,6 +523,8 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "alpha_grad": 100.0,
         "kourkoutas_beta": False,
         "k_warmup_steps": None,
+        "centered_wd": 0.0,
+        "centered_wd_mode": CenteredWDMode.FLOAT8,
     },
     Optimizer.SIMPLIFIED_AdEMAMix: {
         "beta1": 0.99,
@@ -531,24 +537,33 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "min_beta1": 0.9,
         "use_bias_correction": True,
         "nnmf_factor": False,
+        "factored_2nd": False,
         "stochastic_rounding": True,
         "compile": False,
         "fused_back_pass": False,
         "orthogonal_gradient": False,
         "kourkoutas_beta": False,
         "k_warmup_steps": None,
+        "scaled_optm": False,
+        "centered_wd": 0.0,
+        "centered_wd_mode": CenteredWDMode.FLOAT8,
     },
     Optimizer.SIGNSGD_ADV: {
-        "momentum": 0.99,
+        "momentum": 0.95,
         "cautious_wd": False,
         "weight_decay": 0.0,
         "nnmf_factor": False,
         "stochastic_rounding": True,
-        "compiled_optimizer": False,
+        "compile": False,
         "fused_back_pass": False,
         "orthogonal_gradient": False,
         "Simplified_AdEMAMix": False,
         "alpha_grad": 100.0,
+        "freeze_on_flip": False,
+        "l1_adaptive": False,
+        "scaled_optm": False,
+        "centered_wd": 0.0,
+        "centered_wd_mode": CenteredWDMode.FLOAT8,
     },
     Optimizer.LION_ADV: {
         "beta1": 0.9,
@@ -564,6 +579,11 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "orthogonal_gradient": False,
         "kappa_p": 1.0,
         "auto_kappa_p": True,
+        "freeze_on_flip": False,
+        "l1_adaptive": False,
+        "scaled_optm": False,
+        "centered_wd": 0.0,
+        "centered_wd_mode": CenteredWDMode.FLOAT8,
     },
     Optimizer.LION_PRODIGY_ADV: {
         "beta1": 0.9,
@@ -596,6 +616,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "low_rank_ortho": False,
         "ortho_rank": 128,
         "rms_rescaling": True,
+        "spectral_normalization": False,
         "nnmf_factor": False,
         "stochastic_rounding": True,
         "compile": False,
@@ -614,7 +635,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "normuon_eps": 1e-8,
         "orthogonal_gradient": False,
         "approx_mars": False,
-        "muon_adam_config": None,
+        "muon_adam_config": {},
     },
     Optimizer.ADAMUON_ADV: {
         "beta1": 0.95,
@@ -627,6 +648,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "low_rank_ortho": False,
         "ortho_rank": 128,
         "rms_rescaling": True,
+        "spectral_normalization": False,
         "nnmf_factor": False,
         "stochastic_rounding": True,
         "compile": False,
@@ -644,7 +666,7 @@ OPTIMIZER_DEFAULT_PARAMETERS = {
         "normuon_variant": True,
         "orthogonal_gradient": False,
         "approx_mars": False,
-        "muon_adam_config": None,
+        "muon_adam_config": {},
     },
     Optimizer.ADABELIEF: {
         "beta1": 0.9,

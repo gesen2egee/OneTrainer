@@ -640,6 +640,12 @@ class LokrModule(PeftBase):
 
         in_m, in_n = factorization(in_dim, self.factor)
         out_l, out_k = factorization(out_dim, self.factor)
+        if min(in_m, in_n, out_l, out_k) <= 0:
+            raise ValueError(
+                "Invalid LoKr factorization. "
+                f"factor={self.factor} does not divide dimensions in={in_dim}, out={out_dim}. "
+                "Use -1 for automatic factorization or choose a divisor of both dimensions."
+            )
         
         # Consistent with Lycoris: w1 (l, m), w2 (k, n)
         # shape: ((out_l, out_k), (in_m, in_n))

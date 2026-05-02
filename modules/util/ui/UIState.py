@@ -76,13 +76,26 @@ class UIState:
         return update
 
     def __set_enum_var(self, obj, is_dict, name, var, var_type, nullable):
+        def parse_enum_value(enum_string: str):
+            # Accept enum names ("FLOAT8"), legacy str(Enum) ("CenteredWDMode.FLOAT8"),
+            # and str-enum values ("float8").
+            if enum_string in var_type.__members__:
+                return var_type[enum_string]
+
+            if "." in enum_string:
+                member_name = enum_string.rsplit(".", 1)[1]
+                if member_name in var_type.__members__:
+                    return var_type[member_name]
+
+            return var_type(enum_string)
+
         if is_dict:
             def update(_0, _1, _2):
                 string_var = var.get()
                 if (string_var == "" or string_var == "None") and nullable:
                     obj[name] = None
                 else:
-                    obj[name] = var_type[string_var]
+                    obj[name] = parse_enum_value(string_var)
                 self.__call_var_traces(name)
         else:
             def update(_0, _1, _2):
@@ -90,7 +103,7 @@ class UIState:
                 if (string_var == "" or string_var == "None") and nullable:
                     setattr(obj, name, None)
                 else:
-                    setattr(obj, name, var_type[string_var])
+                    setattr(obj, name, parse_enum_value(string_var))
                 self.__call_var_traces(name)
 
         return update

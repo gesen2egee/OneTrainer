@@ -1,5 +1,6 @@
 from modules.model.SanaModel import SanaModel
 from modules.modelSaver.mixin.LoRASaverMixin import LoRASaverMixin
+from modules.util.convert.lora.convert_sana_lora import convert_sana_lora_key_sets
 from modules.util.convert.lora.convert_lora_util import LoraConversionKeySet
 from modules.util.enum.ModelFormat import ModelFormat
 
@@ -14,7 +15,7 @@ class SanaLoRASaver(
         super().__init__()
 
     def _get_convert_key_sets(self, model: SanaModel) -> list[LoraConversionKeySet] | None:
-        return None
+        return convert_sana_lora_key_sets()
 
     def _get_state_dict(
             self,

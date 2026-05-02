@@ -53,9 +53,25 @@ class LoRALoaderMixin(metaclass=ABCMeta):
         if os.path.exists(os.path.join(lora_name, "meta.json")):
             safetensors_lora_name = os.path.join(lora_name, "lora", "lora.safetensors")
             if os.path.exists(safetensors_lora_name):
-                self.__load_safetensors(model, safetensors_lora_name)
+                # Internal backups are already written in OneTrainer-native keyspace.
+                # Re-running external format conversion here can corrupt unknown/legacy
+                # keys and break resume loading for older checkpoints.
+                model.lora_state_dict = self.__repair_internal_keys(load_file(safetensors_lora_name))
         else:
             raise Exception("not an internal model")
+
+    @staticmethod
+    def __repair_internal_keys(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        repaired: dict[str, torch.Tensor] = {}
+        for key, value in state_dict.items():
+            fixed_key = key
+            # Recovery path for malformed Flux2 keys like:
+            # "diffusion_model.txt_intransformer.transformer_blocks..."
+            # which should be "transformer.transformer_blocks..."
+            if "transformer." in fixed_key and not fixed_key.startswith("transformer."):
+                fixed_key = fixed_key[fixed_key.find("transformer."):]
+            repaired[fixed_key] = value
+        return repaired
 
     def _load(
             self,

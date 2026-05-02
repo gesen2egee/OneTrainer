@@ -105,7 +105,7 @@ class BaseModelSetup(
         lrs = scheduler.get_last_lr()
         parameters = model.parameters.display_name_mapping
 
-        reported_learning_rates = {}
+        scheduled_learning_rates: dict[str, float | None] = {}
 
         # Handle MuonWithAuxAdam's split parameter groups
         if any('optim_type' in g for g in model.optimizer.param_groups):
@@ -117,22 +117,37 @@ class BaseModelSetup(
                 # but might retain the same base name (e.g., 'unet').
                 optim_type = group.get('optim_type', 'unknown')
                 unique_name = f"{name}_{optim_type}"
-                if unique_name not in reported_learning_rates:
-                    reported_learning_rates[unique_name] = group['lr']
+                if unique_name not in scheduled_learning_rates:
+                    scheduled_learning_rates[unique_name] = group['lr']
         else:
             for lr, parameter in zip(lrs, parameters, strict=True):
                 # only use the prefix. this prevents multiple embedding reports. TODO: find a better solution
                 name = parameter.split('/')[0]
 
-                if name not in reported_learning_rates:
-                    reported_learning_rates[name] = lr
+                if name not in scheduled_learning_rates:
+                    scheduled_learning_rates[name] = lr
 
-        reported_learning_rates = config.optimizer.optimizer.maybe_adjust_lrs(reported_learning_rates, model.optimizer)
+        reported_learning_rates = config.optimizer.optimizer.maybe_adjust_lrs(
+            dict(scheduled_learning_rates), model.optimizer
+        )
 
+        step = model.train_progress.global_step
         for name, lr in reported_learning_rates.items():
-            tensorboard.add_scalar(
-                f"lr/{name}", lr, model.train_progress.global_step
-            )
+            tensorboard.add_scalar(f"lr/{name}", lr, step)
+
+        if config.optimizer.optimizer.is_adaptive:
+            for name, sched in scheduled_learning_rates.items():
+                if sched is not None:
+                    tensorboard.add_scalar(f"lr_sched/{name}", sched, step)
+            for group in model.optimizer.param_groups:
+                raw_name = group.get('name')
+                if not raw_name or not group.get('params'):
+                    continue
+                if 'optim_type' in group:
+                    tag = f"{raw_name}_{group.get('optim_type', 'unknown')}"
+                else:
+                    tag = raw_name.split('/')[0]
+                tensorboard.add_scalar(f"optimizer/d/{tag}", float(group.get('d', 1.0)), step)
 
         if hasattr(model.optimizer, 'kourkoutas_helper') and model.optimizer.kourkoutas_helper is not None:
             stats = model.optimizer.kourkoutas_helper.last_beta2_stats

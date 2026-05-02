@@ -35,6 +35,14 @@ class SampleConfig(BaseConfig):
     use_meancache: bool
     meancache_preset: str
 
+    # Few-step / distillation (DMD2, Lightning): comma-separated timestep indices, e.g. "999,749,499,249"
+    custom_diffusion_timesteps: str
+
+    # Sampler-only LoRA (not trained; stacked during preview sampling)
+    sampler_lora_model_name: str
+    sampler_lora_strength: float
+    sampler_lora_rank: int | None
+
     def __init__(self, data: list[(str, Any, type, bool)]):
         super().__init__(data)
 
@@ -47,6 +55,11 @@ class SampleConfig(BaseConfig):
         self.text_encoder_4_layer_skip = train_config.text_encoder_4_layer_skip
         self.transformer_attention_mask = train_config.transformer.attention_mask
         self.force_last_timestep = train_config.rescale_noise_scheduler_to_zero_terminal_snr
+        self.sampler_lora_model_name = train_config.sampler_lora_model_name
+        # Per-sample strength override is only honored when set to a non-default value.
+        if self.sampler_lora_strength is None or float(self.sampler_lora_strength) == 1.0:
+            self.sampler_lora_strength = train_config.sampler_lora_strength
+        self.sampler_lora_rank = train_config.sampler_lora_rank
 
     @staticmethod
     def default_values():
@@ -81,5 +94,11 @@ class SampleConfig(BaseConfig):
         # MeanCache (experimental - currently disabled by default)
         data.append(("use_meancache", False, bool, False))
         data.append(("meancache_preset", "balanced", str, False))
+
+        data.append(("custom_diffusion_timesteps", "", str, False))
+
+        data.append(("sampler_lora_model_name", "", str, False))
+        data.append(("sampler_lora_strength", 1.0, float, False))
+        data.append(("sampler_lora_rank", None, int, True))
 
         return SampleConfig(data)

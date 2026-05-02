@@ -9,6 +9,7 @@ from modules.modelLoader.mixin.HFModelLoaderMixin import HFModelLoaderMixin
 from modules.modelLoader.mixin.LoRALoaderMixin import LoRALoaderMixin
 from modules.util.config.TrainConfig import QuantizationConfig
 from modules.util.convert.lora.convert_lora_util import LoraConversionKeySet
+from modules.util.convert.lora.convert_zimage_lora import convert_zimage_lora_key_sets
 from modules.util.enum.ModelType import ModelType
 from modules.util.ModelNames import ModelNames
 from modules.util.ModelWeightDtypes import ModelWeightDtypes
@@ -200,7 +201,7 @@ class ZImageLoRALoader(
         super().__init__()
 
     def _get_convert_key_sets(self, model: BaseModel) -> list[LoraConversionKeySet] | None:
-        return None
+        return convert_zimage_lora_key_sets()
 
     def load(
             self,

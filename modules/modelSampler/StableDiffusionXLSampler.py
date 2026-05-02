@@ -5,6 +5,7 @@ from modules.model.StableDiffusionXLModel import StableDiffusionXLModel
 from modules.modelSampler.BaseModelSampler import BaseModelSampler, ModelSamplerOutput
 from modules.util import create, factory
 from modules.util.config.SampleConfig import SampleConfig
+from modules.util import sample_schedule_util
 from modules.util.enum.AudioFormat import AudioFormat
 from modules.util.enum.FileType import FileType
 from modules.util.enum.ImageFormat import ImageFormat
@@ -51,6 +52,7 @@ class StableDiffusionXLSampler(BaseModelSampler):
             text_encoder_1_layer_skip: int = 0,
             text_encoder_2_layer_skip: int = 0,
             force_last_timestep: bool = False,
+            custom_diffusion_timesteps: str = "",
             on_update_progress: Callable[[int, int], None] = lambda _, __: None,
     ) -> ModelSamplerOutput:
         with self.model.autocast_context:
@@ -90,17 +92,13 @@ class StableDiffusionXLSampler(BaseModelSampler):
             torch_gc()
 
             # prepare timesteps
-            noise_scheduler.set_timesteps(diffusion_steps, device=self.train_device)
-            timesteps = noise_scheduler.timesteps
-
-            if force_last_timestep:
-                last_timestep = torch.ones(1, device=self.train_device, dtype=torch.int64) \
-                                * (noise_scheduler.config.num_train_timesteps - 1)
-
-                # add the final timestep to force predicting with zero snr if it's not already here
-                if timesteps[0] != last_timestep:
-                    noise_scheduler.set_timesteps(diffusion_steps + 1, device=self.train_device)
-                    timesteps = torch.cat([last_timestep, timesteps])
+            timesteps = sample_schedule_util.noise_scheduler_set_inference_timesteps(
+                noise_scheduler,
+                diffusion_steps,
+                self.train_device,
+                custom_diffusion_timesteps,
+                force_last_timestep,
+            )
 
             original_height = height
             original_width = width
@@ -229,6 +227,7 @@ class StableDiffusionXLSampler(BaseModelSampler):
             text_encoder_1_layer_skip: int = 0,
             text_encoder_2_layer_skip: int = 0,
             force_last_timestep: bool = False,
+            custom_diffusion_timesteps: str = "",
             on_update_progress: Callable[[int, int], None] = lambda _, __: None,
     ) -> ModelSamplerOutput:
         with self.model.autocast_context:
@@ -330,17 +329,13 @@ class StableDiffusionXLSampler(BaseModelSampler):
             torch_gc()
 
             # prepare timesteps
-            noise_scheduler.set_timesteps(diffusion_steps, device=self.train_device)
-            timesteps = noise_scheduler.timesteps
-
-            if force_last_timestep:
-                last_timestep = torch.ones(1, device=self.train_device, dtype=torch.int64) \
-                                * (noise_scheduler.config.num_train_timesteps - 1)
-
-                # add the final timestep to force predicting with zero snr if it's not already here
-                if timesteps[0] != last_timestep:
-                    noise_scheduler.set_timesteps(diffusion_steps + 1, device=self.train_device)
-                    timesteps = torch.cat([last_timestep, timesteps])
+            timesteps = sample_schedule_util.noise_scheduler_set_inference_timesteps(
+                noise_scheduler,
+                diffusion_steps,
+                self.train_device,
+                custom_diffusion_timesteps,
+                force_last_timestep,
+            )
 
             original_height = height
             original_width = width
@@ -475,6 +470,7 @@ class StableDiffusionXLSampler(BaseModelSampler):
                 text_encoder_1_layer_skip=sample_config.text_encoder_1_layer_skip,
                 text_encoder_2_layer_skip=sample_config.text_encoder_2_layer_skip,
                 force_last_timestep=sample_config.force_last_timestep,
+                custom_diffusion_timesteps=sample_config.custom_diffusion_timesteps,
                 on_update_progress=on_update_progress,
             )
         else:
@@ -492,6 +488,7 @@ class StableDiffusionXLSampler(BaseModelSampler):
                 text_encoder_1_layer_skip=sample_config.text_encoder_1_layer_skip,
                 text_encoder_2_layer_skip=sample_config.text_encoder_2_layer_skip,
                 force_last_timestep=sample_config.force_last_timestep,
+                custom_diffusion_timesteps=sample_config.custom_diffusion_timesteps,
                 on_update_progress=on_update_progress,
             )
 

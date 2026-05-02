@@ -46,6 +46,7 @@ from diffusers import (
     DPMSolverMultistepScheduler,
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
+    LCMScheduler,
     SchedulerMixin,
     UniPCMultistepScheduler,
 )
@@ -1383,6 +1384,32 @@ def create_noise_scheduler(
                 steps_offset=1,
                 prediction_type=prediction_type,
             )
+        case NoiseScheduler.LCM:
+            if original_noise_scheduler is not None:
+                try:
+                    scheduler = LCMScheduler.from_config(original_noise_scheduler.config)
+                except (ValueError, TypeError):
+                    scheduler = LCMScheduler(
+                        num_train_timesteps=num_train_timesteps,
+                        beta_start=beta_start,
+                        beta_end=beta_end,
+                        beta_schedule=beta_schedule,
+                        trained_betas=None,
+                        clip_sample=False,
+                        set_alpha_to_one=True,
+                        prediction_type=prediction_type,
+                    )
+            else:
+                scheduler = LCMScheduler(
+                    num_train_timesteps=num_train_timesteps,
+                    beta_start=beta_start,
+                    beta_end=beta_end,
+                    beta_schedule=beta_schedule,
+                    trained_betas=None,
+                    clip_sample=False,
+                    set_alpha_to_one=True,
+                    prediction_type=prediction_type,
+                )
         case NoiseScheduler.EULER:
             scheduler = EulerDiscreteScheduler(
                 num_train_timesteps=num_train_timesteps,

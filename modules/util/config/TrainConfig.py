@@ -14,6 +14,7 @@ from modules.util.enum.CenteredWDMode import CenteredWDMode
 from modules.util.enum.ConfigPart import ConfigPart
 from modules.util.enum.DataType import DataType
 from modules.util.enum.CEPNoiseType import CEPNoiseType
+from modules.util.enum.DOPPolicy import DOPPolicy
 from modules.util.enum.EMAMode import EMAMode
 from modules.util.enum.GradientCheckpointingMethod import GradientCheckpointingMethod
 from modules.util.enum.GradientReducePrecision import GradientReducePrecision
@@ -572,6 +573,28 @@ class TrainConfig(BaseConfig):
     lora_decompose_output_axis: bool
     lora_weight_dtype: DataType
     bundle_additional_embeddings: bool
+
+    # Sampler-only LoRA (e.g. DMD2 / Lightning); not optimized; stacked at sample time
+    sampler_lora_model_name: str
+    sampler_lora_strength: float
+    sampler_lora_rank: int | None
+
+    # Differential Output Preservation (DOP)
+    dop_enabled: bool
+    dop_multiplier: float
+    dop_trigger_token: str
+    dop_class_replacement: str
+    dop_preset: str
+    dop_policy: DOPPolicy
+    dop_interval_steps: int
+    dop_start_step: int
+    dop_end_step: int
+    dop_adaptive_strength: float
+    dop_word_boundary_only: bool
+    dop_case_sensitive: bool
+    dop_allow_missing_trigger: bool
+    # If > 0, weighted DOP loss is capped at (this * base_loss) per step so preservation cannot extinguish concept learning.
+    dop_max_weighted_to_base_ratio: float
 
     # lokr
     lokr_factor: int
@@ -1216,7 +1239,25 @@ class TrainConfig(BaseConfig):
         data.append(("lora_decompose_output_axis", False, bool, False))
         data.append(("lora_weight_dtype", DataType.FLOAT_32, DataType, False))
         data.append(("bundle_additional_embeddings", True, bool, False))
-        
+
+        data.append(("sampler_lora_model_name", "", str, False))
+        data.append(("sampler_lora_strength", 1.0, float, False))
+        data.append(("sampler_lora_rank", None, int, True))
+        data.append(("dop_enabled", False, bool, False))
+        data.append(("dop_multiplier", 1.0, float, False))
+        data.append(("dop_trigger_token", "", str, False))
+        data.append(("dop_class_replacement", "", str, False))
+        data.append(("dop_preset", "balanced", str, False))
+        data.append(("dop_policy", DOPPolicy.ALWAYS_ON, DOPPolicy, False))
+        data.append(("dop_interval_steps", 10, int, False))
+        data.append(("dop_start_step", 0, int, False))
+        data.append(("dop_end_step", -1, int, False))
+        data.append(("dop_adaptive_strength", 1.0, float, False))
+        data.append(("dop_word_boundary_only", True, bool, False))
+        data.append(("dop_case_sensitive", False, bool, False))
+        data.append(("dop_allow_missing_trigger", False, bool, False))
+        data.append(("dop_max_weighted_to_base_ratio", 0.0, float, False))
+
         # lokr
         data.append(("lokr_factor", -1, int, False))
 

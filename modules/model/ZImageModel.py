@@ -155,6 +155,11 @@ class ZImageModel(BaseModel):
             tokens_mask = tokenizer_output.attention_mask.to(self.text_encoder.device)
 
         if text_encoder_output is None and self.text_encoder is not None:
+            text_encoder_device = self.text_encoder.device
+            if tokens is not None and tokens.device != text_encoder_device:
+                tokens = tokens.to(text_encoder_device)
+            if tokens_mask is not None and tokens_mask.device != text_encoder_device:
+                tokens_mask = tokens_mask.to(text_encoder_device)
             with self.text_encoder_autocast_context:
                 text_encoder_output = self.text_encoder(
                     tokens,

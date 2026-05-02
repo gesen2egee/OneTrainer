@@ -56,6 +56,11 @@ def reduce_tensor_mean(tensor):
         torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
         tensor /= world_size()
 
+
+def reduce_tensor_sum(tensor):
+    if is_enabled():
+        torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
+
 async_deque = deque()
 in_transfer = 0
 

@@ -20,6 +20,7 @@ from modules.ui.CaptionUI import CaptionUI
 from modules.ui.CloudTab import CloudTab
 from modules.ui.ConceptTab import ConceptTab
 from modules.ui.ConvertModelUI import ConvertModelUI
+from modules.ui.DOPTab import DOPTab
 from modules.ui.LoraTab import LoraTab
 from modules.ui.ModelTab import ModelTab
 from modules.ui.ProfilingWindow import ProfilingWindow
@@ -121,6 +122,7 @@ class TrainUI(ctk.CTk):
         self.model_tab = None
         self.training_tab = None
         self.lora_tab = None
+        self.dop_tab = None
         self.cloud_tab = None
         self.additional_embeddings_tab = None
 
@@ -133,6 +135,7 @@ class TrainUI(ctk.CTk):
         self.training_commands = None
 
         self.always_on_tensorboard_subprocess = None
+        self._tensorboard_last_args = None
         self.current_workspace_dir = self.train_config.workspace_dir
         self._check_start_always_on_tensorboard()
 
@@ -418,6 +421,27 @@ class TrainUI(ctk.CTk):
                          tooltip="Whether to include sample images in the Tensorboard output.")
         components.switch(sub_frame, 0, 3, self.ui_state, "samples_to_tensorboard")
 
+        if self.train_config.training_method == TrainingMethod.FINE_TUNE and (
+                self.train_config.model_type.is_stable_diffusion_xl()
+                or self.train_config.model_type.is_stable_diffusion()
+                or self.train_config.model_type.is_z_image()
+                or self.train_config.model_type.is_flux_1()
+                or self.train_config.model_type.is_flux_2()
+                or self.train_config.model_type.is_qwen()
+        ):
+            components.label(
+                sub_frame, 1, 0, "Sampler-only LoRA",
+                tooltip="Optional distillation or speed LoRA on the main denoiser, applied only during sampling "
+                        "(not in training loss). Accepts local paths, HF resolve/blob URLs, and repo ids (owner/repo). "
+                        "For LoRA training, configure this on the LoRA tab instead.",
+            )
+            components.path_entry(
+                sub_frame, 1, 1, self.ui_state, "sampler_lora_model_name",
+                mode="file", path_modifier=components.json_path_modifier,
+            )
+            components.label(sub_frame, 1, 2, "strength")
+            components.entry(sub_frame, 1, 3, self.ui_state, "sampler_lora_strength", width=72, sticky="nw")
+
         # table
         frame = ctk.CTkFrame(master=master, corner_radius=0)
         frame.grid(row=1, column=0, sticky="nsew")
@@ -570,6 +594,7 @@ class TrainUI(ctk.CTk):
 
         if self.lora_tab:
             self.lora_tab.refresh_ui()
+        self._refresh_dop_tab()
 
     def change_training_method(self, training_method: TrainingMethod):
         if not self.tabview:
@@ -581,13 +606,42 @@ class TrainUI(ctk.CTk):
         if training_method != TrainingMethod.LORA and "LoRA" in self.tabview._tab_dict:
             self.tabview.delete("LoRA")
             self.lora_tab = None
+        if "DOP" in self.tabview._tab_dict and not self._supports_dop_tab():
+            self.tabview.delete("DOP")
+            self.dop_tab = None
         if training_method != TrainingMethod.EMBEDDING and "embedding" in self.tabview._tab_dict:
             self.tabview.delete("embedding")
 
         if training_method == TrainingMethod.LORA and "LoRA" not in self.tabview._tab_dict:
             self.lora_tab = LoraTab(self.tabview.add("LoRA"), self.train_config, self.ui_state)
+        self._refresh_dop_tab()
         if training_method == TrainingMethod.EMBEDDING and "embedding" not in self.tabview._tab_dict:
             self.embedding_tab(self.tabview.add("embedding"))
+
+    def _supports_dop_tab(self) -> bool:
+        if self.train_config.training_method != TrainingMethod.LORA:
+            return False
+        mt = self.train_config.model_type
+        return (
+            mt.is_stable_diffusion_xl()
+            or mt.is_stable_diffusion()
+            or mt.is_z_image()
+            or mt.is_flux_1()
+            or mt.is_flux_2()
+            or mt.is_qwen()
+        )
+
+    def _refresh_dop_tab(self):
+        if not self.tabview:
+            return
+        if self._supports_dop_tab():
+            if "DOP" not in self.tabview._tab_dict:
+                self.dop_tab = DOPTab(self.tabview.add("DOP"), self.train_config, self.ui_state)
+            elif self.dop_tab:
+                self.dop_tab.refresh_ui()
+        elif "DOP" in self.tabview._tab_dict:
+            self.tabview.delete("DOP")
+            self.dop_tab = None
 
     def load_preset(self):
         if not self.tabview:
@@ -808,16 +862,19 @@ class TrainUI(ctk.CTk):
             self._start_always_on_tensorboard()
 
     def _start_always_on_tensorboard(self):
-        if self.always_on_tensorboard_subprocess:
-            self._stop_always_on_tensorboard()
+        if self.always_on_tensorboard_subprocess is not None:
+            if self.always_on_tensorboard_subprocess.poll() is None:
+                return
+            self.always_on_tensorboard_subprocess = None
 
-        tensorboard_executable = os.path.join(os.path.dirname(sys.executable), "tensorboard")
         tensorboard_log_dir = os.path.join(self.train_config.workspace_dir, "tensorboard")
 
         os.makedirs(Path(tensorboard_log_dir).absolute(), exist_ok=True)
 
         tensorboard_args = [
-            tensorboard_executable,
+            sys.executable,
+            "-m",
+            "tensorboard.main",
             "--logdir",
             tensorboard_log_dir,
             "--port",
@@ -828,8 +885,12 @@ class TrainUI(ctk.CTk):
         if self.train_config.tensorboard_expose:
             tensorboard_args.append("--bind_all")
 
+        if self._tensorboard_last_args == tensorboard_args:
+            return
+
         try:
             self.always_on_tensorboard_subprocess = subprocess.Popen(tensorboard_args)
+            self._tensorboard_last_args = tensorboard_args
         except Exception:
             self.always_on_tensorboard_subprocess = None
 
@@ -844,6 +905,7 @@ class TrainUI(ctk.CTk):
                 pass
             finally:
                 self.always_on_tensorboard_subprocess = None
+                self._tensorboard_last_args = None
 
     def _on_workspace_dir_change(self, new_workspace_dir: str):
         if new_workspace_dir != self.current_workspace_dir:

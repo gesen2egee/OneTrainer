@@ -124,6 +124,8 @@ class Optimizer(Enum):
         ]
 
     # Small helper for adjusting learning rates to adaptive optimizers.
+    # TensorBoard `lr/*` uses this value for Prodigy/D-Adapt: scheduler LR × `d` (and optional effective_lr),
+    # so sharp rises are often the optimizer's `d` ramping, not the LR schedule alone. See `lr_sched/*` + `optimizer/d/*`.
     def maybe_adjust_lrs(self, lrs: dict[str, float], optimizer: torch.optim.Optimizer):
         if self.is_adaptive:
             return {

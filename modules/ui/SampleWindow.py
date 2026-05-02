@@ -12,6 +12,7 @@ from modules.modelSampler.BaseModelSampler import (
 from modules.ui.SampleFrame import SampleFrame
 from modules.util import create
 from modules.util.callbacks.TrainCallbacks import TrainCallbacks
+from modules.util.sampler_only_lora import SamplerOnlyLoRAContext
 from modules.util.commands.TrainCommands import TrainCommands
 from modules.util.config.SampleConfig import SampleConfig
 from modules.util.config.TrainConfig import TrainConfig
@@ -194,15 +195,21 @@ class SampleWindow(ctk.CTkToplevel):
 
             self.model.eval()
 
-            self.model_sampler.sample(
-                sample_config=sample,
-                destination=sample_path,
-                image_format=self.current_train_config.sample_image_format,
-                video_format=self.current_train_config.sample_video_format,
-                audio_format=self.current_train_config.sample_audio_format,
-                on_sample=self.__update_preview,
-                on_update_progress=self.__update_progress,
-            )
+            with SamplerOnlyLoRAContext(
+                    self.model,
+                    self.current_train_config,
+                    sample,
+                    torch.device(self.initial_train_config.train_device),
+            ):
+                self.model_sampler.sample(
+                    sample_config=sample,
+                    destination=sample_path,
+                    image_format=self.current_train_config.sample_image_format,
+                    video_format=self.current_train_config.sample_video_format,
+                    audio_format=self.current_train_config.sample_audio_format,
+                    on_sample=self.__update_preview,
+                    on_update_progress=self.__update_progress,
+                )
 
     def destroy(self):
         try:

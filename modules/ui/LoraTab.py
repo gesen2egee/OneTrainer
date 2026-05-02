@@ -160,3 +160,30 @@ class LoraTab:
             components.label(master, 4, 0, "Bundle Embeddings",
                             tooltip=f"Bundles any additional embeddings into the {name} output file, rather than as separate files")
             components.switch(master, 4, 1, self.ui_state, "bundle_additional_embeddings")
+
+        if peft_type == PeftType.LORA and (
+                self.train_config.model_type.is_stable_diffusion_xl()
+                or self.train_config.model_type.is_stable_diffusion()
+                or self.train_config.model_type.is_z_image()
+                or self.train_config.model_type.is_flux_1()
+                or self.train_config.model_type.is_flux_2()
+                or self.train_config.model_type.is_qwen()
+        ):
+            sd_row = 10
+            components.label(
+                master, sd_row, 0, "Sampler-only LoRA",
+                tooltip="Optional distillation or speed LoRA on the main denoiser (UNet or transformer), "
+                        "applied only during sampling-not in the training loss. Accepts local paths, HF resolve/blob URLs, "
+                        "and repo ids (owner/repo). Stacks on the training LoRA when present.",
+            )
+            sampler_lora_entry = components.path_entry(
+                master, sd_row, 1, self.ui_state, "sampler_lora_model_name",
+                mode="file", path_modifier=components.json_path_modifier,
+            )
+            sampler_lora_entry.grid_configure(columnspan=4)
+            sd_row += 1
+            components.label(
+                master, sd_row, 0, "Sampler LoRA strength",
+                tooltip="Multiplies adapter output after load (default 1.0).",
+            )
+            components.entry(master, sd_row, 1, self.ui_state, "sampler_lora_strength")

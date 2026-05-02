@@ -1,6 +1,7 @@
 from modules.model.ZImageModel import ZImageModel
 from modules.modelSaver.mixin.LoRASaverMixin import LoRASaverMixin
 from modules.util.convert.lora.convert_lora_util import LoraConversionKeySet
+from modules.util.convert.lora.convert_zimage_lora import convert_zimage_lora_key_sets
 from modules.util.enum.ModelFormat import ModelFormat
 
 import torch
@@ -14,7 +15,7 @@ class ZImageLoRASaver(
         super().__init__()
 
     def _get_convert_key_sets(self, model: ZImageModel) -> list[LoraConversionKeySet] | None:
-        return None
+        return convert_zimage_lora_key_sets()
 
     def _get_state_dict(
             self,

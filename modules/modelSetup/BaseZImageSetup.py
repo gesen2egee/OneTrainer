@@ -111,6 +111,12 @@ class BaseZImageSetup(
                 text_encoder_output=batch.get('text_encoder_hidden_state'),
                 text_encoder_dropout_probability=config.text_encoder.dropout_probability,
             )
+            # When text encodings are recomputed (e.g. DOP path), the text encoder may be offloaded on CPU
+            # while the transformer runs on train_device. Align per-sample caption features to transformer device.
+            text_encoder_output = [
+                sample.to(device=self.train_device, dtype=model.train_dtype.torch_dtype())
+                for sample in text_encoder_output
+            ]
 
             if config.cep_noise_type != CEPNoiseType.NONE:
                 for i in range(len(text_encoder_output)):

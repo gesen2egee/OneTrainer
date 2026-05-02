@@ -4,6 +4,8 @@ from enum import Enum
 class NoiseScheduler(Enum):
     DDIM = 'DDIM'
 
+    LCM = 'LCM'
+
     EULER = 'EULER'
     EULER_A = 'EULER_A'
     DPMPP = 'DPMPP'

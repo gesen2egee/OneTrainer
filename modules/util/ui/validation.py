@@ -330,11 +330,15 @@ class FieldValidator:
         try:
             if declared_type is int:
                 v = int(value)
-                if v < 0:
+                # Allow sentinel-based validators (e.g. DOP end step = -1) to run.
+                # If no extra validator is provided, keep the generic non-negative rule.
+                if v < 0 and self._extra_validate is None:
                     return "Value must be non-negative"
             elif declared_type is float:
                 v = float(value)
-                if v < 0:
+                # Allow extra validators to decide what negative values mean.
+                # If no extra validator is provided, keep the generic non-negative rule.
+                if v < 0 and self._extra_validate is None:
                     return "Value must be non-negative"
             elif declared_type is bool:
                 if value.lower() not in ("true", "false", "0", "1"):

@@ -77,7 +77,8 @@ class ZImageLoRASetup(
             config: TrainConfig,
     ):
         vae_on_train_device = not config.latent_caching
-        text_encoder_on_train_device = not config.latent_caching
+        # DOP requires prompt re-encoding each step; keep TE on train device to avoid CPU-bound DOP path.
+        text_encoder_on_train_device = config.dop_enabled or not config.latent_caching
 
         model.text_encoder_to(self.train_device if text_encoder_on_train_device else self.temp_device)
         model.vae_to(self.train_device if vae_on_train_device else self.temp_device)

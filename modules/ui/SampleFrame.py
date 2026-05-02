@@ -85,6 +85,7 @@ class SampleFrame(ctk.CTkFrame):
             components.label(bottom_frame, 4, 2, "sampler:")
             components.options_kv(bottom_frame, 4, 3, [
                 ("DDIM", NoiseScheduler.DDIM),
+                ("LCM", NoiseScheduler.LCM),
                 ("Euler", NoiseScheduler.EULER),
                 ("Euler A", NoiseScheduler.EULER_A),
                 # ("DPM++", NoiseScheduler.DPMPP), # TODO: produces noisy samples
@@ -121,14 +122,42 @@ class SampleFrame(ctk.CTkFrame):
                                   allow_image_files=True,
                                   )
 
+            components.label(
+                bottom_frame, 7, 0, "custom timesteps:",
+                tooltip="Optional comma-separated indices (e.g. DMD2 SDXL: 999,749,499,249). "
+                        "Requires LCM or Euler; leave empty to use the step count only.",
+            )
+            components.entry(
+                bottom_frame, 7, 1, self.ui_state, "custom_diffusion_timesteps",
+                width=220, sticky="ew",
+            )
+
+            components.label(
+                bottom_frame, 8, 0, "sampler LoRA:",
+                tooltip="Inference-only LoRA on the main denoiser during sampling (e.g. DMD2 / Lightning on SD; "
+                        "transformer LoRA on Z-Image, Flux, Qwen). Accepts local paths, HF resolve/blob URLs, and "
+                        "repo ids (owner/repo). Stacks on the trained adapter. Leave empty to disable.",
+            )
+            components.path_entry(
+                bottom_frame, 8, 1, self.ui_state, "sampler_lora_model_name",
+                mode="file", path_modifier=components.json_path_modifier,
+            )
+
+            components.label(
+                bottom_frame, 9, 0, "sampler LoRA strength:",
+                tooltip="If left as 1.0, falls back to the train/LoRA-tab sampler LoRA strength. "
+                        "Set to any other value for a per-sample override.",
+            )
+            components.entry(bottom_frame, 9, 1, self.ui_state, "sampler_lora_strength")
+
             # MeanCache acceleration
-            components.label(bottom_frame, 7, 0, "MeanCache:",
+            components.label(bottom_frame, 10, 0, "MeanCache:",
                              tooltip="Enable MeanCache for ~1.4x-2.0x sampling speedup (Flow Matching models only)")
-            components.switch(bottom_frame, 7, 1, self.ui_state, "use_meancache")
+            components.switch(bottom_frame, 10, 1, self.ui_state, "use_meancache")
 
             # MeanCache preset
-            components.label(bottom_frame, 7, 2, "Preset:",
+            components.label(bottom_frame, 10, 2, "Preset:",
                              tooltip="Quality (1.4x) / Balanced (1.67x) / Speed (1.8x) / Turbo (2.0x)")
-            components.options(bottom_frame, 7, 3, ["quality", "balanced", "speed", "turbo"], 
+            components.options(bottom_frame, 10, 3, ["quality", "balanced", "speed", "turbo"],
                              self.ui_state, "meancache_preset")
 

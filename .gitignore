@@ -1,7 +1,12 @@
 # development
 .idea
+.vscode/
+.agent/
+local_changes.txt
 *.bak
 *.pyc
+*.pyc.*
+__pycache__/
 *.swp
 *~
 debug*.ipynb

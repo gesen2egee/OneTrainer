@@ -88,3 +88,23 @@ def compose(*checks: Callable[[str], str | None]) -> Callable[[str], str | None]
         return None
 
     return _check
+
+
+def check_non_negative_or_minus_one(*, message: str | None = None) -> Callable[[str], str | None]:
+    """Validate integer values where -1 is a sentinel and all other values must be >= 0."""
+
+    def _check(value: str) -> str | None:
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            v = int(value)
+        except (ValueError, TypeError):
+            return None
+        if v == -1:
+            return None
+        if v < 0:
+            return message or "Value must be -1 or a non-negative integer"
+        return None
+
+    return _check

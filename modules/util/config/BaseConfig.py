@@ -109,10 +109,30 @@ class BaseConfig:
                         setattr(self, name, str(data[name]))
                 elif issubclass_safe(self.types[name], Enum):
                     if isinstance(data[name], str):
-                        if self.nullables[name]:
-                            setattr(self, name, None if data[name] is None else self.types[name][data[name]])
+                        enum_value = data[name]
+
+                        if self.nullables[name] and enum_value is None:
+                            setattr(self, name, None)
+                            continue
+
+                        enum_cls = self.types[name]
+                        resolved_value = None
+
+                        # Preferred modern format: member name (e.g. "FLOAT8")
+                        if enum_value in enum_cls.__members__:
+                            resolved_value = enum_cls[enum_value]
                         else:
-                            setattr(self, name, self.types[name][data[name]])
+                            # Legacy format from str(Enum): "CenteredWDMode.FLOAT8"
+                            if "." in enum_value:
+                                member_name = enum_value.rsplit(".", 1)[1]
+                                if member_name in enum_cls.__members__:
+                                    resolved_value = enum_cls[member_name]
+
+                            # Value format for str-enums: e.g. "float8"
+                            if resolved_value is None:
+                                resolved_value = enum_cls(enum_value)
+
+                        setattr(self, name, resolved_value)
                     else:
                         setattr(self, name, data[name])
                 elif self.types[name] is bool:

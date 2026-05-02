@@ -115,6 +115,11 @@ def __convert(
 ) -> dict[str, Tensor]:
     out_states = {}
 
+    if source == '':
+        # Unknown source format: keep keys untouched instead of corrupting them
+        # via empty-prefix matching against the first conversion key set.
+        return dict(state_dict)
+
     if source == target:
         return dict(state_dict)
 
@@ -129,6 +134,9 @@ def __convert(
                 in_prefix = key_set.diffusers_prefix
             elif source == 'legacy_diffusers':
                 in_prefix = key_set.legacy_diffusers_prefix
+
+            if not in_prefix:
+                continue
 
             if not key.startswith(in_prefix):
                 continue

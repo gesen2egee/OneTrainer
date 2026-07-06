@@ -9,6 +9,33 @@ class BaseConfig:
     config_version: int
     config_migrations: dict[int, Callable[[dict], dict]]
 
+    @staticmethod
+    def _parse_enum_value(enum_type: type[Enum], raw_value: Any):
+        if not isinstance(raw_value, str):
+            return raw_value
+
+        # Preferred format: member name (e.g. "FLOAT8")
+        try:
+            return enum_type[raw_value]
+        except KeyError:
+            pass
+
+        # Legacy format accidentally produced by str(EnumMember) in Python 3.10
+        # (e.g. "CenteredWDMode.FLOAT8")
+        if "." in raw_value:
+            member_name = raw_value.rsplit(".", 1)[-1]
+            try:
+                return enum_type[member_name]
+            except KeyError:
+                pass
+
+        # Value format (e.g. "float8")
+        for member in enum_type:
+            if str(member.value) == raw_value:
+                return member
+
+        raise KeyError(raw_value)
+
     def __init__(
             self,
             data: list[tuple[str, Any, type, bool]],
@@ -110,9 +137,13 @@ class BaseConfig:
                 elif issubclass_safe(self.types[name], Enum):
                     if isinstance(data[name], str):
                         if self.nullables[name]:
-                            setattr(self, name, None if data[name] is None else self.types[name][data[name]])
+                            setattr(
+                                self,
+                                name,
+                                None if data[name] is None else self._parse_enum_value(self.types[name], data[name])
+                            )
                         else:
-                            setattr(self, name, self.types[name][data[name]])
+                            setattr(self, name, self._parse_enum_value(self.types[name], data[name]))
                     else:
                         setattr(self, name, data[name])
                 elif self.types[name] is bool:

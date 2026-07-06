@@ -215,6 +215,19 @@ class OptimizerParamsWindow(ctk.CTkToplevel):
             'centered_wd': {'title': 'Centered Weight Decay', 'tooltip': 'Centered Weight Decay coefficient. Instead of decaying weights toward zero, they are decayed toward their initial values (anchors). This can be used together with standard weight decay.', 'type': 'float'},
             'centered_wd_mode': {'title': 'Centered WD Mode', 'tooltip': """The quantization format used to store the anchor weights to save VRAM. Options include: 'full': Stores anchors in the original parameter's precision. 'float8': Uses torch.float8_e4m3fn for a balance of precision and memory. 'int8': Uses 8-bit block-wise quantization. 'int4': Uses 4-bit block-wise quantization.""", 'type': 'CenteredWDMode'},
             'factored_2nd': {'title': 'Factored 2nd', 'tooltip': 'Whether to keep the first moment uncompressed (dense), while only factorizing the second moment. This makes the optimizer highly robust to a wide range of LRs, mimicking high-order optimization.', 'type': 'bool'},
+            'vector_reshape': {'title': 'Vector Reshape', 'tooltip': 'Enables an alternative factorization for vectors by reshaping them. Can save VRAM but might affect performance.', 'type': 'bool'},
+            'beta2_min': {'title': 'K-β Minimum β2', 'tooltip': 'Minimum value of β2 used by dynamic Kourkoutas beta mechanism.', 'type': 'float'},
+            'ema_alpha': {'title': 'K-β EMA α', 'tooltip': 'Exponential moving average alpha for gradient variance tracking.', 'type': 'float'},
+            'tiny_spike': {'title': 'K-β Tiny Spike', 'tooltip': 'Threshold below which variance spikes are ignored.', 'type': 'float'},
+            'dual_adam': {'title': 'Dual Adam', 'tooltip': 'Blends standard Adam update with inverse Adam update (m * sqrt(v)) to accelerate early training stages.', 'type': 'bool'},
+            'dual_adam_xi': {'title': 'Dual Adam Xi', 'tooltip': 'Decay rate for dual Adam blending alpha. Set slightly above 0 to gradually phase it out.', 'type': 'float'},
+            'dual_adam_alpha_max': {'title': 'Dual Adam Alpha Max', 'tooltip': 'Maximum strength of the inverse Adam component. 1.0 means full blending capabilities.', 'type': 'float'},
+            'use_skipupdate': {'title': 'Skip Update', 'tooltip': 'Drops a proportion of column updates to save computation/VRAM. Simple unstructured sparse update. Mutually exclusive with Magma.', 'type': 'bool'},
+            'use_magma': {'title': 'Magma Gate', 'tooltip': 'Momentum scale gating. Evaluates cosine similarity between momentum and gradients to drop updates intelligently.', 'type': 'bool'},
+            'mask_p': {'title': 'Mask P', 'tooltip': 'Probability to SURVIVE masking in SkipUpdate or Magma. Lower values drop more parameters per step.', 'type': 'float'},
+            'magma_tau': {'title': 'Magma Tau', 'tooltip': 'Temperature for Magma cosine similarity sigmoid. Controls strictness of gating.', 'type': 'float'},
+            'magma_ema': {'title': 'Magma EMA', 'tooltip': 'Exponential moving average for Magma column scale probabilities.', 'type': 'float'},
+            'mask_1d_params': {'title': 'Mask 1D Params', 'tooltip': 'Applies SkipUpdate or Magma drops to 1D parameters (like biases and norms).', 'type': 'bool'},
         }
         # @formatter:on
 

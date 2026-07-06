@@ -161,6 +161,19 @@ class TrainOptimizerConfig(BaseConfig):
     centered_wd: float
     centered_wd_mode: CenteredWDMode
     factored_2nd: False
+    vector_reshape: False
+    beta2_min: float
+    ema_alpha: float
+    tiny_spike: float
+    dual_adam: False
+    dual_adam_xi: float
+    dual_adam_alpha_max: float
+    use_skipupdate: False
+    use_magma: False
+    mask_p: float
+    magma_tau: float
+    magma_ema: float
+    mask_1d_params: False
 
     def __init__(self, data: list[(str, Any, type, bool)]):
         super().__init__(data)
@@ -294,6 +307,19 @@ class TrainOptimizerConfig(BaseConfig):
         data.append(("centered_wd", 0.0, float, False))
         data.append(("centered_wd_mode", CenteredWDMode.FLOAT8, CenteredWDMode, False))
         data.append(("factored_2nd", False, bool, False))
+        data.append(("vector_reshape", False, bool, False))
+        data.append(("beta2_min", None, float, True))
+        data.append(("ema_alpha", None, float, True))
+        data.append(("tiny_spike", None, float, True))
+        data.append(("dual_adam", False, bool, False))
+        data.append(("dual_adam_xi", None, float, True))
+        data.append(("dual_adam_alpha_max", None, float, True))
+        data.append(("use_skipupdate", False, bool, False))
+        data.append(("use_magma", False, bool, False))
+        data.append(("mask_p", None, float, True))
+        data.append(("magma_tau", None, float, True))
+        data.append(("magma_ema", None, float, True))
+        data.append(("mask_1d_params", False, bool, False))
 
         return TrainOptimizerConfig(data)
 

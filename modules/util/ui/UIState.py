@@ -76,13 +76,36 @@ class UIState:
         return update
 
     def __set_enum_var(self, obj, is_dict, name, var, var_type, nullable):
+        def parse_enum(string_var: str):
+            # Preferred format: member name (e.g. "FLOAT8")
+            try:
+                return var_type[string_var]
+            except KeyError:
+                pass
+
+            # Legacy format produced by str(EnumMember) in Python 3.10
+            # (e.g. "CenteredWDMode.FLOAT8")
+            if "." in string_var:
+                member_name = string_var.rsplit(".", 1)[-1]
+                try:
+                    return var_type[member_name]
+                except KeyError:
+                    pass
+
+            # Value format (e.g. "float8")
+            for member in var_type:
+                if str(member.value) == string_var:
+                    return member
+
+            raise KeyError(string_var)
+
         if is_dict:
             def update(_0, _1, _2):
                 string_var = var.get()
                 if (string_var == "" or string_var == "None") and nullable:
                     obj[name] = None
                 else:
-                    obj[name] = var_type[string_var]
+                    obj[name] = parse_enum(string_var)
                 self.__call_var_traces(name)
         else:
             def update(_0, _1, _2):
@@ -90,7 +113,7 @@ class UIState:
                 if (string_var == "" or string_var == "None") and nullable:
                     setattr(obj, name, None)
                 else:
-                    setattr(obj, name, var_type[string_var])
+                    setattr(obj, name, parse_enum(string_var))
                 self.__call_var_traces(name)
 
         return update
